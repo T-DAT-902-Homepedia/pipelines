@@ -1,0 +1,29 @@
+# Configuration SparkSession — chargée par SparkHooks (src/dvf/hooks.py).
+# Les clés non-Spark (endpoint/credentials MinIO) sont injectées séparément
+# depuis conf/local/credentials.yml ; ici on ne met que ce qui peut être public.
+
+# Exécution locale (cluster/HDFS = décision ultérieure, cf. plan Phase 2).
+spark.master: local[*]
+spark.app.name: dvf-medallion
+
+# Ressources & shuffle — calibrés pour ~3,7M lignes / 645 Mo sur une machine locale.
+spark.driver.memory: 4g
+spark.sql.shuffle.partitions: 64
+spark.sql.session.timeZone: UTC
+spark.ui.enabled: "false"
+
+# Dépendances téléchargées au lancement (Ivy) :
+#   - hadoop-aws + aws-java-sdk-bundle : connecteur S3A vers MinIO.
+#     Versions ALIGNÉES sur Hadoop embarqué par PySpark 3.5.8 (hadoop-client 3.3.4).
+#   - postgresql : driver JDBC pour la couche Gold PostGIS.
+spark.jars.packages: org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,org.postgresql:postgresql:42.7.4
+
+# S3A — implémentation du système de fichiers s3a:// et accès style "path"
+# (obligatoire pour MinIO, qui n'utilise pas le routage par sous-domaine d'AWS).
+spark.hadoop.fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.path.style.access: "true"
+spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+spark.hadoop.fs.s3a.aws.credentials.provider: org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+# MinIO supporte le rename d'objets : le FileOutputCommitter par défaut suffit en
+# dev local. (Un committer S3A "magic"/"directory" ne s'imposerait que sur S3 AWS,
+# où le rename n'est pas atomique — il faudrait alors le JAR spark-hadoop-cloud.)

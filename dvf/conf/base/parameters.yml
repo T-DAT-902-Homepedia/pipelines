@@ -1,0 +1,47 @@
+# Paramètres métier du pipeline DVF (cf. méthodologie validée en Phase 1).
+
+# Source du CSV brut Geo DVF (millésime 2024). Téléchargé par le node
+# ensure_raw_csv s'il est absent de data/01_raw/ (reproductibilité depuis un clone).
+# NB : l'ID stable data.gouv (316795eb-…) redirige vers le listing du dossier,
+# qui renvoie 404 — seul le chemin direct du millésime est servi.
+geo_dvf_source_url: https://files.data.gouv.fr/geo-dvf/latest/csv/2024/full.csv.gz
+
+# Nombre de partitions Parquet en Bronze (le gzip source est non-splittable :
+# repartitionner débloque le parallélisme des étapes aval).
+bronze_repartitions: 32
+
+# Natures de mutation retenues pour l'analyse de marché (~94 % "Vente").
+natures_mutation_retenues:
+  - Vente
+
+# Types de locaux bâtis pour lesquels un prix au m² a un sens.
+types_local_batis:
+  - Maison
+  - Appartement
+
+# Prix/m² calculé uniquement sur les mutations mono-bien bâti (attribution
+# non ambiguë). 1 = un seul local principal dans la mutation.
+max_locaux_for_ppm2: 1
+
+# Bornage des prix/m² aberrants, appliqué PAR département × type_local
+# (un seuil national écraserait Paris).
+ppm2_clip_quantiles:
+  lower: 0.01
+  upper: 0.99
+
+# Une commune avec moins de ce nombre de transactions est marquée fiable=false
+# (médiane locale peu robuste) — marquée, jamais supprimée.
+seuil_fiabilite_commune: 5
+
+# Contours administratifs (pipeline geo). Niveaux pré-simplifiés Etalab 2025,
+# EPSG:4326. low=1000m (dézoom national), mid=100m, high=50m (zoom local).
+# Propriétés GeoJSON : code (INSEE), nom, departement (communes uniquement).
+contours_etalab:
+  communes:
+    low: https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/geojson/communes-1000m.geojson
+    mid: https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/geojson/communes-100m.geojson
+    high: https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/geojson/communes-50m.geojson
+  departements:
+    low: https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/geojson/departements-1000m.geojson
+    mid: https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/geojson/departements-100m.geojson
+    high: https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/geojson/departements-50m.geojson

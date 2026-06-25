@@ -1,0 +1,4 @@
+# Surcharges Spark pour l'environnement `docker` (fusionné par-dessus base/spark.yml).
+# Mémoire driver réduite : le dataset fait ~645 Mo, 2g suffit, et évite un échec de
+# démarrage JVM si Docker dispose de peu de RAM. Le run local conserve 4g (base).
+spark.driver.memory: 2g

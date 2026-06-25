@@ -1,0 +1,13 @@
+# Garde le contexte de build léger : data/ seul fait ~650 Mo.
+.venv/
+data/
+.viz/
+*.log
+__pycache__/
+*.pyc
+notebooks/
+docs/
+tests/
+.ruff_cache/
+.ipynb_checkpoints/
+conf/local/

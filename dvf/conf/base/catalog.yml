@@ -1,0 +1,79 @@
+# Catalog DVF — pipeline médaillon (Bronze/Silver sur MinIO s3a://, Gold en PostGIS).
+#
+# Conventions :
+#   - Codes INSEE/postaux en String (zéros à gauche) : géré dans les nodes, pas ici.
+#   - Bronze/Silver : Parquet sur s3a://homepedia/... (MinIO).
+#   - Gold : tables PostGIS via Spark JDBC.
+
+# --- Source brute (local) -------------------------------------------------
+geo_dvf_raw:
+  type: spark.SparkDataset
+  filepath: data/01_raw/geo_dvf.csv.gz
+  file_format: csv
+  load_args:
+    header: true
+    sep: ","
+    # Schéma explicite (pas d'inferSchema) — codes en String (zéros à gauche).
+    # Doit rester aligné avec src/dvf/schema.py:GEO_DVF_SCHEMA.
+    schema: "id_mutation string, date_mutation string, numero_disposition string, nature_mutation string, valeur_fonciere double, adresse_numero string, adresse_suffixe string, adresse_nom_voie string, adresse_code_voie string, code_postal string, code_commune string, nom_commune string, code_departement string, ancien_code_commune string, ancien_nom_commune string, id_parcelle string, ancien_id_parcelle string, numero_volume string, lot1_numero string, lot1_surface_carrez double, lot2_numero string, lot2_surface_carrez double, lot3_numero string, lot3_surface_carrez double, lot4_numero string, lot4_surface_carrez double, lot5_numero string, lot5_surface_carrez double, nombre_lots string, code_type_local string, type_local string, surface_reelle_bati double, nombre_pieces_principales double, code_nature_culture string, nature_culture string, code_nature_culture_speciale string, nature_culture_speciale string, surface_terrain double, longitude double, latitude double"
+
+# --- BRONZE (copie 1:1 typée, Parquet sur MinIO) --------------------------
+bronze_geo_dvf:
+  type: spark.SparkDataset
+  filepath: s3a://homepedia/bronze/geo_dvf
+  file_format: parquet
+  save_args:
+    mode: overwrite
+
+# --- SILVER (nettoyé / dédoublonné / prix-m²) -----------------------------
+silver_mutations:
+  type: spark.SparkDataset
+  filepath: s3a://homepedia/silver/mutations
+  file_format: parquet
+  save_args:
+    mode: overwrite
+
+silver_biens_ppm2:
+  type: spark.SparkDataset
+  filepath: s3a://homepedia/silver/biens_ppm2
+  file_format: parquet
+  save_args:
+    mode: overwrite
+
+# --- GOLD (PostGIS via JDBC) ----------------------------------------------
+# Schéma déclaré dans db/schemas/ (source de vérité), appliqué par db-init avant
+# la pipeline. mode overwrite + truncate:true -> Spark fait TRUNCATE (pas
+# DROP+CREATE), donc CONSERVE la table pré-déclarée (types PostGIS, index).
+# Les colonnes des DataFrames doivent rester alignées avec ces tables.
+gold_agg_commune:
+  type: spark.SparkJDBCDataset
+  url: jdbc:postgresql://${oc.env:POSTGRES_HOST,localhost}:${oc.env:POSTGRES_PORT,5432}/${oc.env:POSTGRES_DB,homepedia}
+  table: agg_commune
+  credentials: postgis
+  save_args:
+    mode: overwrite
+    properties:
+      driver: org.postgresql.Driver
+      truncate: "true"
+
+gold_agg_departement:
+  type: spark.SparkJDBCDataset
+  url: jdbc:postgresql://${oc.env:POSTGRES_HOST,localhost}:${oc.env:POSTGRES_PORT,5432}/${oc.env:POSTGRES_DB,homepedia}
+  table: agg_departement
+  credentials: postgis
+  save_args:
+    mode: overwrite
+    properties:
+      driver: org.postgresql.Driver
+      truncate: "true"
+
+gold_transactions:
+  type: spark.SparkJDBCDataset
+  url: jdbc:postgresql://${oc.env:POSTGRES_HOST,localhost}:${oc.env:POSTGRES_PORT,5432}/${oc.env:POSTGRES_DB,homepedia}
+  table: transactions
+  credentials: postgis
+  save_args:
+    mode: overwrite
+    properties:
+      driver: org.postgresql.Driver
+      truncate: "true"
