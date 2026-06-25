@@ -1,0 +1,14 @@
+ipython>=8.10
+jupyterlab>=3.0
+notebook
+kedro[jupyter]~=1.4.0
+kedro-datasets>=9.1
+pyspark>=3.5,<3.6
+# Dépendances runtime de spark.SparkDataset (importées au niveau module).
+hdfs>=2.7
+s3fs>=2023.1
+# Accès PostGIS du pipeline geo (node Python pur, hors Spark).
+psycopg[binary]>=3.2
+kedro-viz>=6.7.0
+scikit-learn~=1.5.1; python_version <= '3.10'
+scikit-learn~=1.8.0; python_version > '3.10'

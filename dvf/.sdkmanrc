@@ -1,0 +1,2 @@
+# Spark 3.5 requires Java 17 (Java 21 is not officially supported by Spark 3.5.x)
+java=17.0.19-tem
