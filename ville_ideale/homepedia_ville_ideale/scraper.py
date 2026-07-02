@@ -1,211 +1,270 @@
 """
-Scraper ville-ideale.fr.
+Scraper ville-ideale.fr — technique PyvesB adaptée pour toutes les communes.
 
-Conçu pour tourner dans GitHub Actions : chaque job a une IP Azure différente,
-ce qui évite les blocages IP. Les délais aléatoires imitent un comportement humain.
+Anti-détection :
+- tls_client avec fingerprint Chrome 131 (clone exact du TLS navigateur)
+- Callback sijs() après chaque page (simule le JS du navigateur)
+- Délai aléatoire entre requêtes
+- Arrêt automatique après N erreurs consécutives (IP bannie)
+- Cache HTML local pour reprendre sans re-scraper
 
-Usage direct :
-    python scripts/scrape_ville_ideale.py --start 0 --end 1750 --output /tmp/batch_0.csv
+Usage :
+    python scripts/scrape_local.py
+    python scripts/scrape_local.py --delay 5 --max-errors 3
 """
 from __future__ import annotations
 
 import csv
-import random
+import re
 import time
+import random
 import unicodedata
 import logging
 from dataclasses import dataclass, fields, asdict
 from pathlib import Path
 
-import httpx
-from bs4 import BeautifulSoup
+import tls_client
 
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://www.ville-ideale.fr"
+SIJS_RE = re.compile(r"sijs\((\d+)\)")
 
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
+CATEGORY_MAP = {
+    "Environnement":    "environnement",
+    "Transports":       "transports",
+    "Sécurité":         "securite",
+    "Santé":            "sante",
+    "Sports et loisirs":"sports_et_loisirs",
+    "Culture":          "culture",
+    "Enseignement":     "enseignement",
+    "Commerces":        "commerces",
+    "Qualité de vie":   "qualite_de_vie",
 }
 
 
 @dataclass
-class Review:
+class CommuneRating:
+    slug: str
     code_commune: str
-    nom_commune: str
-    date: str
-    auteur: str
-    note_moyenne: str
+    nom_ville: str
+    note_globale: str
     environnement: str
     transports: str
     securite: str
     sante: str
-    sports_loisirs: str
+    sports_et_loisirs: str
     culture: str
     enseignement: str
     commerces: str
-    qualite_vie: str
-    points_positifs: str
-    points_negatifs: str
+    qualite_de_vie: str
 
+
+# ── Slug ──────────────────────────────────────────────────────────────────────
 
 def slugify(name: str) -> str:
-    nfkd = unicodedata.normalize("NFKD", name)
-    ascii_str = nfkd.encode("ascii", "ignore").decode("ascii")
-    slug = ascii_str.lower()
-    for char in ["'", "'", " ", "/"]:
-        slug = slug.replace(char, "-")
-    slug = "".join(c for c in slug if c.isalnum() or c == "-")
-    while "--" in slug:
-        slug = slug.replace("--", "-")
-    return slug.strip("-")
+    slug = unicodedata.normalize("NFD", name.lower())
+    slug = "".join(c for c in slug if unicodedata.category(c) != "Mn")
+    for ch in ["'", "’", " ", "/"]:
+        slug = slug.replace(ch, "-")
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug
 
 
-def build_url(nom_commune: str, code_insee: str) -> str:
-    slug = slugify(nom_commune)
-    code = str(int(code_insee))
-    return f"{BASE_URL}/{slug}_{code}"
+def build_slug(nom_commune: str, code_insee: str) -> str:
+    """Ex: 'Metz', '57463' -> 'metz_57463'"""
+    code = code_insee[:2].upper() if code_insee[:2].upper() in ("2A", "2B") \
+        else str(int(code_insee))
+    return f"{slugify(nom_commune)}_{code}"
 
 
-def parse_reviews(html: str, code_commune: str, nom_commune: str) -> list[Review]:
-    soup = BeautifulSoup(html, "html.parser")
-    reviews = []
+# ── Session tls_client ────────────────────────────────────────────────────────
 
-    for div in soup.select("div.comm"):
-        p = div.find("p")
-        if not p:
-            continue
-        spans = p.find_all("span")
-        date = spans[0].text.replace("Avis posté le ", "").strip() if spans else ""
-        strong_tags = p.find_all("strong")
-        auteur = strong_tags[0].text.strip() if strong_tags else ""
-
-        note_moy_tag = div.find("strong", class_="moyenne")
-        note_moyenne = note_moy_tag.text.strip() if note_moy_tag else ""
-
-        notes = [""] * 9
-        tables = div.find_all("table")
-        if tables:
-            tds = tables[0].find_all("tr")
-            if len(tds) > 1:
-                vals = tds[1].find_all("td")
-                notes = [td.text.strip() for td in vals[:9]]
-                notes += [""] * (9 - len(notes))
-
-        pos = neg = ""
-        for p_tag in div.find_all("p"):
-            b = p_tag.find("b")
-            if b and "positif" in b.text.lower():
-                pos = p_tag.get_text(separator=" ").replace(b.text, "").strip()
-            elif b and "négatif" in b.text.lower():
-                neg = p_tag.get_text(separator=" ").replace(b.text, "").strip()
-
-        reviews.append(Review(
-            code_commune=code_commune,
-            nom_commune=nom_commune,
-            date=date,
-            auteur=auteur,
-            note_moyenne=note_moyenne,
-            environnement=notes[0],
-            transports=notes[1],
-            securite=notes[2],
-            sante=notes[3],
-            sports_loisirs=notes[4],
-            culture=notes[5],
-            enseignement=notes[6],
-            commerces=notes[7],
-            qualite_vie=notes[8],
-            points_positifs=pos,
-            points_negatifs=neg,
-        ))
-
-    return reviews
+def new_session() -> tls_client.Session:
+    """Session avec fingerprint Chrome 131 — indiscernable d'un vrai navigateur."""
+    return tls_client.Session(
+        client_identifier="chrome_131",
+        random_tls_extension_order=True,
+    )
 
 
-def scrape_commune(
-    client: httpx.Client,
-    nom_commune: str,
-    code_insee: str,
-    max_reviews: int = 10,
-) -> list[Review]:
-    url = build_url(nom_commune, code_insee)
-    reviews: list[Review] = []
-
-    for page in range(1, 3):
-        page_url = url if page == 1 else f"{url}?page={page}#commentaires"
-        try:
-            resp = client.get(page_url, timeout=15)
-        except Exception as e:
-            log.warning(f"Erreur réseau {nom_commune}: {e}")
-            break
-
-        if resp.status_code == 404:
-            break
-        if resp.status_code != 200:
-            log.warning(f"HTTP {resp.status_code}: {nom_commune}")
-            break
-        if len(resp.content) < 500:
-            log.warning(f"Réponse trop courte ({len(resp.content)}b) — IP bloquée ? {nom_commune}")
-            break
-
-        page_reviews = parse_reviews(resp.text, code_insee, nom_commune)
-        reviews.extend(page_reviews)
-
-        if len(reviews) >= max_reviews or not page_reviews:
-            break
-
-        time.sleep(random.gauss(2.0, 0.5))
-
-    return reviews[:max_reviews]
+def send_sijs(session: tls_client.Session, html: str) -> None:
+    """POST le callback sijs() que le navigateur envoie après chaque page.
+    Sans ça, le serveur détecte le bot après ~10 requêtes.
+    """
+    m = SIJS_RE.search(html)
+    if not m:
+        return
+    try:
+        session.post(
+            f"{BASE_URL}/scripts/cherche.php",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": BASE_URL,
+                "Referer": f"{BASE_URL}/",
+            },
+            data=f"click={m.group(1)}",
+            timeout_seconds=10,
+        )
+    except Exception:
+        pass
 
 
-def scrape_batch(
+def fetch_page(session: tls_client.Session, url: str) -> str | None:
+    try:
+        resp = session.get(
+            url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.5",
+                "Referer": f"{BASE_URL}/",
+            },
+            timeout_seconds=30,
+        )
+        if resp.status_code == 200 and len(resp.text) > 500:
+            send_sijs(session, resp.text)
+            return resp.text
+        return None
+    except Exception as e:
+        log.debug(f"Erreur fetch: {e}")
+        return None
+
+
+# ── Parsing ───────────────────────────────────────────────────────────────────
+
+def parse_ratings(html: str, slug: str, code_commune: str) -> CommuneRating | None:
+    # Note globale
+    ng = re.search(r'<p\s+id="ng"[^>]*>([\d,]+)', html)
+    overall = ng.group(1).replace(",", ".") if ng else ""
+
+    # Nom de la ville
+    h1 = re.search(r"<h1>\s*(.+?)\s*(?:\([\d]+\))?\s*</h1>", html)
+    nom = h1.group(1).strip().title() if h1 else slug
+
+    # Notes par catégorie dans <table id="tablonotes">
+    ratings = {}
+    table = re.search(r'<table\s+id="tablonotes">(.*?)</table>', html, re.DOTALL)
+    if table:
+        for row in re.finditer(
+            r"<th[^>]*>\s*(.*?)\s*</th>\s*<td[^>]*>\s*([\d,]+)\s*</td>",
+            table.group(1),
+        ):
+            key = CATEGORY_MAP.get(row.group(1).strip())
+            if key:
+                ratings[key] = row.group(2).replace(",", ".")
+
+    if not overall and not ratings:
+        return None
+
+    return CommuneRating(
+        slug=slug,
+        code_commune=code_commune,
+        nom_ville=nom,
+        note_globale=overall,
+        **{k: ratings.get(k, "") for k in list(CATEGORY_MAP.values())},
+    )
+
+
+# ── Cache HTML local ──────────────────────────────────────────────────────────
+
+def cache_path(html_dir: Path, slug: str) -> Path:
+    return html_dir / f"{slug}.html"
+
+
+def load_cached(html_dir: Path, slug: str) -> str | None:
+    p = cache_path(html_dir, slug)
+    return p.read_text(encoding="utf-8") if p.exists() else None
+
+
+def save_cached(html_dir: Path, slug: str, html: str) -> None:
+    html_dir.mkdir(parents=True, exist_ok=True)
+    cache_path(html_dir, slug).write_text(html, encoding="utf-8")
+
+
+# ── Scraping principal ────────────────────────────────────────────────────────
+
+def scrape_all(
     communes_csv: Path,
-    start: int,
-    end: int,
-    output: Path,
-    max_reviews: int = 10,
-    delay_min: float = 2.0,
-    delay_max: float = 5.0,
+    output_csv: Path,
+    html_dir: Path,
+    delay: float = 3.0,
+    delay_jitter: float = 1.5,
+    max_consecutive_errors: int = 5,
 ) -> None:
+    # Charge les communes
     with open(communes_csv, encoding="utf-8") as f:
         communes = list(csv.DictReader(f))
 
-    batch = communes[start:end]
-    log.info(f"Batch {start}-{end} : {len(batch)} communes")
+    # Charge les slugs déjà dans le CSV de sortie (reprise)
+    done_slugs: set[str] = set()
+    if output_csv.exists():
+        with open(output_csv, encoding="utf-8") as f:
+            done_slugs = {row["slug"] for row in csv.DictReader(f)}
+        log.info(f"Reprise : {len(done_slugs)} communes déjà scrapées")
 
-    all_reviews: list[Review] = []
-    output.parent.mkdir(parents=True, exist_ok=True)
+    todo = []
+    for row in communes:
+        nom = row.get("nom_commune") or row.get("nom_commune_postal", "")
+        code = row.get("code_commune_INSEE", "")
+        if not nom or not code:
+            continue
+        slug = build_slug(nom, code)
+        if slug not in done_slugs:
+            todo.append((slug, nom, code))
 
-    with httpx.Client(headers=_HEADERS, follow_redirects=True) as client:
-        for i, row in enumerate(batch):
-            nom = row.get("nom_commune") or row.get("nom_commune_postal", "")
-            code = row.get("code_commune_INSEE", "")
-            if not nom or not code:
-                continue
+    log.info(f"Communes à scraper : {len(todo)} / {len(communes)}")
 
-            reviews = scrape_commune(client, nom, code, max_reviews)
-            if reviews:
-                all_reviews.extend(reviews)
-                log.info(f"[{start + i}/{end}] {nom}: {len(reviews)} avis")
+    # Ouvre le CSV en mode append
+    fieldnames = [f.name for f in fields(CommuneRating)]
+    write_header = not output_csv.exists() or output_csv.stat().st_size == 0
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    session = new_session()
+    consecutive_errors = 0
+    scraped = 0
+
+    with open(output_csv, "a", newline="", encoding="utf-8") as fout:
+        writer = csv.DictWriter(fout, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+
+        for i, (slug, nom, code) in enumerate(todo):
+            # Vérifie le cache HTML local d'abord
+            html = load_cached(html_dir, slug)
+            if html:
+                log.debug(f"[{i+1}/{len(todo)}] {nom} — cache")
             else:
-                log.debug(f"[{start + i}/{end}] {nom}: aucun avis")
+                url = f"{BASE_URL}/{slug}"
+                time.sleep(max(0.1, random.gauss(delay, delay_jitter)))
+                html = fetch_page(session, url)
 
-            time.sleep(random.uniform(delay_min, delay_max))
+                if not html:
+                    consecutive_errors += 1
+                    log.warning(
+                        f"[{i+1}/{len(todo)}] {nom} — vide "
+                        f"({consecutive_errors}/{max_consecutive_errors})"
+                    )
+                    if consecutive_errors >= max_consecutive_errors:
+                        log.error(
+                            f"\n⛔ {max_consecutive_errors} erreurs consécutives — "
+                            f"IP probablement bannie.\n"
+                            f"Relance le script plus tard pour continuer "
+                            f"(progression sauvegardée)."
+                        )
+                        break
+                    continue
 
-    fieldnames = [f.name for f in fields(Review)]
-    with open(output, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(asdict(r) for r in all_reviews)
+                consecutive_errors = 0
+                save_cached(html_dir, slug, html)
 
-    log.info(f"Terminé : {len(all_reviews)} avis -> {output}")
+            rating = parse_ratings(html, slug, code)
+            if rating:
+                writer.writerow(asdict(rating))
+                fout.flush()
+                scraped += 1
+                log.info(f"[{i+1}/{len(todo)}] {nom} — {rating.note_globale}/10")
+            else:
+                log.debug(f"[{i+1}/{len(todo)}] {nom} — pas de notes")
+
+    log.info(f"\nTerminé : {scraped} communes avec notes -> {output_csv}")
