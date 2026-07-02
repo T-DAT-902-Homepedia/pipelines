@@ -1,0 +1,142 @@
+# DAG homepedia_pipeline — Cloud Workflows (cf. ADR-0009 et ARCHITECTURE.md).
+#
+# Chaque étape lance le Cloud Run Job `duckpipe` avec des arguments CLI
+# différents. Structure : ingest (parallèle) -> geometries -> preprocess
+# (parallèle, dépend des géométries silver) -> validate_silver -> score ->
+# validate_gold -> publish.
+#
+# Déploiement :
+#   gcloud workflows deploy homepedia-pipeline \
+#     --location=europe-west1 --source=deploy/homepedia-pipeline.yaml \
+#     --service-account=pipeline-runner@project-aab739fb-fb38-4996-84e.iam.gserviceaccount.com
+#
+# Exécution manuelle (année et/ou run_date spécifiques) :
+#   gcloud workflows run homepedia-pipeline --location=europe-west1 \
+#     --data='{"year": 2024}'
+
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - year: 2024
+          - run_date: ${text.substring(time.format(sys.now()), 0, 10)}
+          - project: ${sys.get_env("GOOGLE_CLOUD_PROJECT_ID")}
+          - location: "europe-west1"
+          - job_name: ${"projects/" + project + "/locations/" + location + "/jobs/duckpipe"}
+
+    - apply_year_param:
+        switch:
+          - condition: ${args != null and map.get(args, "year") != null}
+            steps:
+              - set_year:
+                  assign:
+                    - year: ${map.get(args, "year")}
+
+    - apply_run_date_param:
+        switch:
+          - condition: ${args != null and map.get(args, "run_date") != null}
+            steps:
+              - set_run_date:
+                  assign:
+                    - run_date: ${map.get(args, "run_date")}
+
+    - ingest_all:
+        parallel:
+          for:
+            value: source
+            in:
+              - "dvf"
+              - "geometries_communes"
+              - "geometries_departements"
+              - "transport"
+              - "revenus"
+              - "risques"
+              - "tourisme"
+              - "securite"
+              - "equipements"
+              - "emploi"
+              - "proximite_metropole"
+              - "climat"
+              - "dpe"
+            steps:
+              - ingest_one:
+                  call: run_duckpipe
+                  args:
+                    job_name: ${job_name}
+                    cli_args: ${["ingest", source, "--env", "prod", "--year", string(year)]}
+
+    - preprocess_geometries:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["run", "geometries", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
+    - preprocess_all:
+        parallel:
+          for:
+            value: pipeline
+            in:
+              - "dvf"
+              - "transport"
+              - "revenus"
+              - "risques"
+              - "tourisme"
+              - "securite"
+              - "equipements"
+              - "emploi"
+              - "dpe"
+              - "climat"
+              - "proximite_metropole"
+            steps:
+              - preprocess_one:
+                  call: run_duckpipe
+                  args:
+                    job_name: ${job_name}
+                    cli_args: ${["run", pipeline, "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
+    - validate_silver:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["validate-silver", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
+    - score:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["run", "score", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
+    - validate_gold:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["validate-gold", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
+    - publish:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["publish", "--env", "prod", "--run-date", run_date]}
+
+    - done:
+        return: ${"score publié pour run_date=" + run_date}
+
+# Lance une exécution du Cloud Run Job duckpipe avec les arguments donnés et
+# attend sa complétion (le connecteur suit l'opération longue durée).
+run_duckpipe:
+  params: [job_name, cli_args]
+  steps:
+    - run:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: ${job_name}
+          body:
+            overrides:
+              containerOverrides:
+                - args: ${cli_args}
+          connector_params:
+            timeout: 3600
+        result: execution
+    - finished:
+        return: ${execution.name}
