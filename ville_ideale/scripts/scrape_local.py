@@ -33,6 +33,8 @@ def main() -> int:
                         help="Délai moyen entre requêtes en secondes (défaut: 3)")
     parser.add_argument("--max-errors", type=int, default=50,
                         help="Arrêt après N erreurs consécutives (défaut: 50)")
+    parser.add_argument("--batch-size", type=int, default=90,
+                        help="Requêtes avant de demander un changement d'IP (défaut: 90)")
     args = parser.parse_args()
 
     scrape_all(
@@ -42,6 +44,7 @@ def main() -> int:
         delay=args.delay,
         delay_jitter=1.5,
         max_consecutive_errors=args.max_errors,
+        batch_size=args.batch_size,
     )
     return 0
 

@@ -190,7 +190,8 @@ def scrape_all(
     html_dir: Path,
     delay: float = 3.0,
     delay_jitter: float = 1.5,
-    max_consecutive_errors: int = 5,
+    max_consecutive_errors: int = 50,
+    batch_size: int = 90,
 ) -> None:
     # Charge les communes
     with open(communes_csv, encoding="utf-8") as f:
@@ -223,21 +224,42 @@ def scrape_all(
     session = new_session()
     consecutive_errors = 0
     scraped = 0
+    batch_count = 0
 
     with open(output_csv, "a", newline="", encoding="utf-8") as fout:
         writer = csv.DictWriter(fout, fieldnames=fieldnames)
         if write_header:
             writer.writeheader()
 
-        for i, (slug, nom, code) in enumerate(todo):
+        i = 0
+        while i < len(todo):
+            slug, nom, code = todo[i]
+
+            # Rotation IP tous les batch_size requêtes réseau (pas cache)
+            if batch_count > 0 and batch_count % batch_size == 0:
+                print(
+                    f"\n{'='*60}\n"
+                    f"✅ Batch terminé ({batch_count} requêtes envoyées).\n"
+                    f"👉 Coupe les données mobiles de ton téléphone,\n"
+                    f"   attends 5 secondes, puis rallume-les.\n"
+                    f"   Appuie sur Entrée quand c'est fait...\n"
+                    f"{'='*60}"
+                )
+                input()
+                session = new_session()
+                consecutive_errors = 0
+                log.info("Nouvelle session — IP changée, on continue.")
+
             # Vérifie le cache HTML local d'abord
             html = load_cached(html_dir, slug)
             if html:
                 log.debug(f"[{i+1}/{len(todo)}] {nom} — cache")
+                i += 1
             else:
                 url = f"{BASE_URL}/{slug}"
                 time.sleep(max(0.1, random.gauss(delay, delay_jitter)))
                 html = fetch_page(session, url)
+                batch_count += 1
 
                 if not html:
                     consecutive_errors += 1
@@ -248,23 +270,25 @@ def scrape_all(
                     if consecutive_errors >= max_consecutive_errors:
                         log.error(
                             f"\n⛔ {max_consecutive_errors} erreurs consécutives — "
-                            f"IP probablement bannie.\n"
-                            f"Relance le script plus tard pour continuer "
-                            f"(progression sauvegardée)."
+                            f"IP bannie.\n"
+                            f"Coupe/rallume les données mobiles puis relance le script.\n"
+                            f"(progression sauvegardée, il reprendra où il s'est arrêté)"
                         )
                         break
+                    i += 1
                     continue
 
                 consecutive_errors = 0
                 save_cached(html_dir, slug, html)
+                i += 1
 
             rating = parse_ratings(html, slug, code)
             if rating:
                 writer.writerow(asdict(rating))
                 fout.flush()
                 scraped += 1
-                log.info(f"[{i+1}/{len(todo)}] {nom} — {rating.note_globale}/10")
+                log.info(f"[{i}/{len(todo)}] {nom} — {rating.note_globale}/10")
             else:
-                log.debug(f"[{i+1}/{len(todo)}] {nom} — pas de notes")
+                log.debug(f"[{i}/{len(todo)}] {nom} — pas de notes")
 
     log.info(f"\nTerminé : {scraped} communes avec notes -> {output_csv}")
