@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  duckpipe:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: duckpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: duckpipe/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      # Les tests d'intégration sur données réelles (exploration/data/raw)
+      # sont sautés automatiquement en CI : seule la suite hors-ligne tourne.
+      - name: Tests
+        run: uv run pytest -q

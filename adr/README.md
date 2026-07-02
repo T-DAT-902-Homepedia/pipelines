@@ -28,3 +28,4 @@ Records).
 | [0009](0009-orchestration-cloud-run-jobs.md) | Orchestration Cloud Run Jobs + Workflows + Scheduler (remplace Cloud Composer) | accepted | 2026-07-02 |
 | [0010](0010-validation-par-base-de-reference.md) | Validation du portage par comparaison à la base de référence | accepted | 2026-07-02 |
 | [0011](0011-acces-gcs-sans-cle-statique.md) | Accès GCS sans clé statique (tunnel google-cloud-storage) | accepted | 2026-07-02 |
+| [0012](0012-ci-cd-github-actions-wif.md) | CI/CD GitHub Actions avec Workload Identity Federation | accepted | 2026-07-02 |
