@@ -1,7 +1,5 @@
 name: Scrape ville-ideale.fr
 
-# Lancement manuel depuis GitHub Actions
-# Chaque job tourne sur un runner GitHub avec une IP Azure différente -> anti-ban
 on:
   workflow_dispatch:
     inputs:
@@ -11,50 +9,34 @@ on:
         required: false
 
 jobs:
-  # ── Étape 1 : calcule les batches ──────────────────────────────────────────
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.gen.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Télécharger le CSV des communes
-        run: |
-          curl -sL "https://raw.githubusercontent.com/T-DAT-902-Homepedia/pipelines/main/ville_ideale/data/communes.csv" \
-            -o /tmp/communes.csv 2>/dev/null || \
-          curl -sL "https://www.data.gouv.fr/fr/datasets/r/554590ab-ae62-40ac-8353-ee75162c05ee" \
-            -o /tmp/communes.csv
-          TOTAL=$(( $(wc -l < /tmp/communes.csv) - 1 ))
-          echo "total=$TOTAL" >> $GITHUB_ENV
-          echo "Total communes : $TOTAL"
-
-      - name: Générer la matrice des batches
-        id: gen
-        run: |
-          N_JOBS=20
-          TOTAL=${{ env.total }}
-          BATCH=$(( (TOTAL + N_JOBS - 1) / N_JOBS ))
-
-          MATRIX="["
-          for i in $(seq 0 $((N_JOBS - 1))); do
-            START=$(( i * BATCH ))
-            END=$(( START + BATCH ))
-            [ $END -gt $TOTAL ] && END=$TOTAL
-            [ $START -ge $TOTAL ] && break
-            MATRIX="${MATRIX}{\"batch\":$i,\"start\":$START,\"end\":$END},"
-          done
-          MATRIX="${MATRIX%,}]"
-          echo "matrix={\"include\":$MATRIX}" >> $GITHUB_OUTPUT
-
-  # ── Étape 2 : scraping parallèle (20 IPs différentes) ─────────────────────
+  # ── Scraping parallèle (20 IPs Azure différentes) ─────────────────────────
   scrape:
-    needs: setup
     runs-on: ubuntu-latest
     strategy:
-      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
       fail-fast: false
       max-parallel: 20
+      matrix:
+        include:
+          - { batch: 0,  start: 0,     end: 1961  }
+          - { batch: 1,  start: 1961,  end: 3922  }
+          - { batch: 2,  start: 3922,  end: 5883  }
+          - { batch: 3,  start: 5883,  end: 7844  }
+          - { batch: 4,  start: 7844,  end: 9805  }
+          - { batch: 5,  start: 9805,  end: 11766 }
+          - { batch: 6,  start: 11766, end: 13727 }
+          - { batch: 7,  start: 13727, end: 15688 }
+          - { batch: 8,  start: 15688, end: 17649 }
+          - { batch: 9,  start: 17649, end: 19610 }
+          - { batch: 10, start: 19610, end: 21571 }
+          - { batch: 11, start: 21571, end: 23532 }
+          - { batch: 12, start: 23532, end: 25493 }
+          - { batch: 13, start: 25493, end: 27454 }
+          - { batch: 14, start: 27454, end: 29415 }
+          - { batch: 15, start: 29415, end: 31376 }
+          - { batch: 16, start: 31376, end: 33337 }
+          - { batch: 17, start: 33337, end: 35298 }
+          - { batch: 18, start: 35298, end: 37259 }
+          - { batch: 19, start: 37259, end: 39201 }
 
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +52,7 @@ jobs:
         run: |
           curl -sL "https://www.data.gouv.fr/fr/datasets/r/554590ab-ae62-40ac-8353-ee75162c05ee" \
             -o /tmp/communes.csv
+          echo "Lignes : $(wc -l < /tmp/communes.csv)"
 
       - name: Scraper le batch ${{ matrix.batch }}
         env:
@@ -90,7 +73,7 @@ jobs:
           path: /tmp/batch_${{ matrix.batch }}.csv
           retention-days: 7
 
-  # ── Étape 3 : merge de tous les CSV ────────────────────────────────────────
+  # ── Merge de tous les CSV ──────────────────────────────────────────────────
   merge:
     needs: scrape
     runs-on: ubuntu-latest
