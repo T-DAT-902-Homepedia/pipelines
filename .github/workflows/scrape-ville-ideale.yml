@@ -28,10 +28,9 @@ jobs:
       - name: Installer les dépendances
         run: pip install httpx beautifulsoup4 lxml
 
-      - name: Télécharger le CSV des communes
+      - name: Préparer le CSV des communes
         run: |
-          curl -sL "https://www.data.gouv.fr/fr/datasets/r/554590ab-ae62-40ac-8353-ee75162c05ee" \
-            -o /tmp/communes.csv
+          cp ville_ideale/data/communes.csv /tmp/communes.csv
           echo "Lignes : $(wc -l < /tmp/communes.csv)"
 
       - name: Scraper le batch ${{ matrix.batch }}
