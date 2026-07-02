@@ -16,27 +16,7 @@ jobs:
       fail-fast: false
       max-parallel: 20
       matrix:
-        include:
-          - { batch: 0,  start: 0,     end: 1961  }
-          - { batch: 1,  start: 1961,  end: 3922  }
-          - { batch: 2,  start: 3922,  end: 5883  }
-          - { batch: 3,  start: 5883,  end: 7844  }
-          - { batch: 4,  start: 7844,  end: 9805  }
-          - { batch: 5,  start: 9805,  end: 11766 }
-          - { batch: 6,  start: 11766, end: 13727 }
-          - { batch: 7,  start: 13727, end: 15688 }
-          - { batch: 8,  start: 15688, end: 17649 }
-          - { batch: 9,  start: 17649, end: 19610 }
-          - { batch: 10, start: 19610, end: 21571 }
-          - { batch: 11, start: 21571, end: 23532 }
-          - { batch: 12, start: 23532, end: 25493 }
-          - { batch: 13, start: 25493, end: 27454 }
-          - { batch: 14, start: 27454, end: 29415 }
-          - { batch: 15, start: 29415, end: 31376 }
-          - { batch: 16, start: 31376, end: 33337 }
-          - { batch: 17, start: 33337, end: 35298 }
-          - { batch: 18, start: 35298, end: 37259 }
-          - { batch: 19, start: 37259, end: 39201 }
+        batch: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
     steps:
       - uses: actions/checkout@v4
@@ -59,11 +39,16 @@ jobs:
           MAX_REVIEWS: ${{ github.event.inputs.max_reviews || '10' }}
           DELAY_MIN: "2.0"
           DELAY_MAX: "5.0"
+          BATCH_SIZE: 1961
+          TOTAL: 39201
         run: |
+          START=$(( ${{ matrix.batch }} * BATCH_SIZE ))
+          END=$(( START + BATCH_SIZE ))
+          [ $END -gt $TOTAL ] && END=$TOTAL
           python ville_ideale/scripts/scrape_ville_ideale.py \
             --communes /tmp/communes.csv \
-            --start ${{ matrix.start }} \
-            --end ${{ matrix.end }} \
+            --start $START \
+            --end $END \
             --output /tmp/batch_${{ matrix.batch }}.csv
 
       - name: Upload batch ${{ matrix.batch }}
@@ -71,6 +56,7 @@ jobs:
         with:
           name: batch-${{ matrix.batch }}
           path: /tmp/batch_${{ matrix.batch }}.csv
+          if-no-files-found: warn
           retention-days: 7
 
   # ── Merge de tous les CSV ──────────────────────────────────────────────────
