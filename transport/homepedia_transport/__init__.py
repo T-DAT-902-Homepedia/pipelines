@@ -1,7 +1,8 @@
-"""Pipeline gold transport Homepedia : silver parquet -> PostGIS.
+"""Pipeline gold transport Homepedia : silver parquet duckpipe -> PostGIS.
 
-La couche silver (déjà nettoyée/typée par l'étape Spark) est lue depuis MinIO/S3,
-puis chargée telle quelle dans les tables gold servies par l'API.
+La couche silver (`transport_commune`, produite par duckpipe) est lue depuis les
+parquet locaux, puis chargée telle quelle dans la table de service lue par l'API.
+duckpipe est la source de vérité ; PostGIS n'est qu'un cache de service.
 """
 
 from .pg import connect, dsn
