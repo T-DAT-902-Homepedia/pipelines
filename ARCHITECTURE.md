@@ -152,11 +152,14 @@ gs://homepedia-data/
 
 ## Décisions arrêtées
 
+> Les décisions d'architecture sont désormais tracées dans [`adr/`](adr/)
+> (norme MADR). En cas de divergence avec ce document, les ADR font foi.
+
 | Décision | Choix |
 |---|---|
-| Moteur | **DuckDB** seul (pas de Spark) — 1,3 Go tient en RAM, DuckDB natif sur GCS |
-| Stockage | **GCS** `gs://homepedia-data/` |
-| Orchestration | **Cloud Composer (Airflow)** — `@yearly` + trigger manuel |
-| Format | **Parquet** (GeoParquet pour `communes_geom`) |
+| Moteur | **DuckDB** seul (pas de Spark) — 1,3 Go tient en RAM, DuckDB natif sur GCS ([ADR-0001](adr/0001-duckdb-moteur-unique.md)) |
+| Stockage | **GCS** `gs://homepedia-data/` ([ADR-0002](adr/0002-stockage-gcs-medaillon-parquet.md)) |
+| Orchestration | ~~Cloud Composer (Airflow)~~ **Remplacée** : Cloud Run Jobs + Workflows + Scheduler ([ADR-0009](adr/0009-orchestration-cloud-run-jobs.md)) |
+| Format | **Parquet** (GeoParquet pour `communes_geom`) ([ADR-0002](adr/0002-stockage-gcs-medaillon-parquet.md)) |
 | API | Lit `gold/score_territoire/latest/` via `duckdb.read_parquet('gs://...')` |
-| Ré-exécution partielle | Via `dag_run.conf = {"year": 2024}` sur les tâches DVF uniquement |
+| Ré-exécution partielle | Via paramètre `year` passé au job DVF (équivalent du `dag_run.conf` initialement prévu) |
