@@ -72,6 +72,12 @@ main:
           job_name: ${job_name}
           cli_args: ${["run", "geometries", "--env", "prod", "--year", string(year), "--run-date", run_date]}
 
+    - preprocess_geometries_web:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["run", "geometries_web", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
     - preprocess_all:
         parallel:
           for:
@@ -119,8 +125,14 @@ main:
           job_name: ${job_name}
           cli_args: ${["publish", "--env", "prod", "--run-date", run_date]}
 
+    - publish_web:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["publish-web", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
     - done:
-        return: ${"score publié pour run_date=" + run_date}
+        return: ${"score et artefacts web publiés pour run_date=" + run_date}
 
 # Lance une exécution du Cloud Run Job duckpipe avec les arguments donnés et
 # attend sa complétion (le connecteur suit l'opération longue durée).

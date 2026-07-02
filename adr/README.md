@@ -29,3 +29,4 @@ Records).
 | [0010](0010-validation-par-base-de-reference.md) | Validation du portage par comparaison à la base de référence | accepted | 2026-07-02 |
 | [0011](0011-acces-gcs-sans-cle-statique.md) | Accès GCS sans clé statique (tunnel google-cloud-storage) | accepted | 2026-07-02 |
 | [0012](0012-ci-cd-github-actions-wif.md) | CI/CD GitHub Actions avec Workload Identity Federation | accepted | 2026-07-02 |
+| [0013](0013-serving-statique-cdn.md) | Serving statique : artefacts web pré-générés sur bucket public | accepted | 2026-07-02 |

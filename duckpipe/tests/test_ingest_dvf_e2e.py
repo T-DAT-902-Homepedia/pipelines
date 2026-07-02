@@ -4,6 +4,7 @@ from pathlib import Path
 
 from duckpipe.catalog import Catalog
 from duckpipe.datasets.csv import CsvDataset
+from duckpipe.datasets.memory import MemoryDataset
 from duckpipe.datasets.parquet import ParquetDataset
 from duckpipe.pipelines.dvf import dvf_pipeline
 
@@ -38,6 +39,8 @@ def test_dvf_pipeline_end_to_end(con, tmp_path: Path) -> None:
         .add("dvf_raw", CsvDataset(str(raw_path)))
         .add("dvf", ParquetDataset(str(tmp_path / "silver" / "dvf.parquet")))
         .add("commune_agg", ParquetDataset(str(tmp_path / "silver" / "commune_agg.parquet")))
+        .add("commune_agg_type", MemoryDataset())
+        .add("dept_agg", MemoryDataset())
     )
 
     dvf_pipeline.run(con, catalog)

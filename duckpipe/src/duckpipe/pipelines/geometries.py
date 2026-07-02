@@ -56,6 +56,61 @@ def geometries(con: duckdb.DuckDBPyConnection, communes_raw: str, depts_raw: str
     return {"commune_geom": "commune_geom", "dept_geom": "dept_geom"}
 
 
+def geometries_web(  # noqa: PLR0913 — une entrée par variante + les référentiels
+    con: duckdb.DuckDBPyConnection,
+    communes_1000m_raw: str,
+    depts_100m_raw: str,
+    depts_1000m_raw: str,
+    commune_geom: str,
+    dept_geom: str,
+) -> dict[str, str]:
+    """Variantes pré-simplifiées Etalab pour les LOD des choroplèthes web
+    (ADR-0013) : topologie de couverture garantie par le producteur, aucune
+    simplification calculée ici (ST_CoverageSimplify s'est révélé non
+    déterministe entre processus, dans la lignée de l'ADR-0008).
+
+    Chaque variante est alignée sur le référentiel nettoyé (les fichiers
+    1000m incluent 86 collectivités du Pacifique — Polynésie,
+    Wallis-et-Futuna… — que clean_geometries écarte du 50m et pour
+    lesquelles aucune source de données n'existe).
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE commune_geom_1000m AS
+        SELECT lpad(CAST(code AS VARCHAR), 5, '0') AS code_commune,
+               nom AS nom_commune, geom
+        FROM {communes_1000m_raw}
+        WHERE lpad(CAST(code AS VARCHAR), 5, '0')
+              IN (SELECT code_commune FROM {commune_geom})
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE dept_geom_100m AS
+        SELECT lpad(CAST(code AS VARCHAR), 2, '0') AS code_departement,
+               nom AS nom_departement, geom
+        FROM {depts_100m_raw}
+        WHERE lpad(CAST(code AS VARCHAR), 2, '0')
+              IN (SELECT code_departement FROM {dept_geom})
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE dept_geom_1000m AS
+        SELECT lpad(CAST(code AS VARCHAR), 2, '0') AS code_departement,
+               nom AS nom_departement, geom
+        FROM {depts_1000m_raw}
+        WHERE lpad(CAST(code AS VARCHAR), 2, '0')
+              IN (SELECT code_departement FROM {dept_geom})
+        """
+    )
+    return {
+        "commune_geom_1000m": "commune_geom_1000m",
+        "dept_geom_100m": "dept_geom_100m",
+        "dept_geom_1000m": "dept_geom_1000m",
+    }
+
+
 geometries_pipeline = Pipeline(
     nodes=[
         Node(
@@ -63,6 +118,25 @@ geometries_pipeline = Pipeline(
             inputs=["communes_raw", "depts_raw"],
             outputs=["commune_geom", "dept_geom"],
             name="geometries",
+        ),
+    ]
+)
+
+# Pipeline séparé : les variantes LOD ne servent qu'à publish-web et
+# dépendent du référentiel nettoyé produit par geometries_pipeline.
+geometries_web_pipeline = Pipeline(
+    nodes=[
+        Node(
+            func=geometries_web,
+            inputs=[
+                "communes_1000m_raw",
+                "depts_100m_raw",
+                "depts_1000m_raw",
+                "commune_geom",
+                "dept_geom",
+            ],
+            outputs=["commune_geom_1000m", "dept_geom_100m", "dept_geom_1000m"],
+            name="geometries_web",
         ),
     ]
 )
