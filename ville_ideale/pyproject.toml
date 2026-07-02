@@ -1,0 +1,10 @@
+[project]
+name = "homepedia-ville-ideale"
+version = "0.1.0"
+description = "Scraper ville-ideale.fr — 10 avis par commune vers la zone bronze S3"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]

@@ -1,0 +1,138 @@
+name: Scrape ville-ideale.fr
+
+# Lancement manuel depuis GitHub Actions
+# Chaque job tourne sur un runner GitHub avec une IP Azure différente -> anti-ban
+on:
+  workflow_dispatch:
+    inputs:
+      max_reviews:
+        description: "Nombre max d'avis par ville"
+        default: "10"
+        required: false
+
+jobs:
+  # ── Étape 1 : calcule les batches ──────────────────────────────────────────
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Télécharger le CSV des communes
+        run: |
+          curl -sL "https://raw.githubusercontent.com/T-DAT-902-Homepedia/pipelines/main/ville_ideale/data/communes.csv" \
+            -o /tmp/communes.csv 2>/dev/null || \
+          curl -sL "https://www.data.gouv.fr/fr/datasets/r/554590ab-ae62-40ac-8353-ee75162c05ee" \
+            -o /tmp/communes.csv
+          TOTAL=$(( $(wc -l < /tmp/communes.csv) - 1 ))
+          echo "total=$TOTAL" >> $GITHUB_ENV
+          echo "Total communes : $TOTAL"
+
+      - name: Générer la matrice des batches
+        id: gen
+        run: |
+          N_JOBS=20
+          TOTAL=${{ env.total }}
+          BATCH=$(( (TOTAL + N_JOBS - 1) / N_JOBS ))
+
+          MATRIX="["
+          for i in $(seq 0 $((N_JOBS - 1))); do
+            START=$(( i * BATCH ))
+            END=$(( START + BATCH ))
+            [ $END -gt $TOTAL ] && END=$TOTAL
+            [ $START -ge $TOTAL ] && break
+            MATRIX="${MATRIX}{\"batch\":$i,\"start\":$START,\"end\":$END},"
+          done
+          MATRIX="${MATRIX%,}]"
+          echo "matrix={\"include\":$MATRIX}" >> $GITHUB_OUTPUT
+
+  # ── Étape 2 : scraping parallèle (20 IPs différentes) ─────────────────────
+  scrape:
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+      fail-fast: false
+      max-parallel: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        run: pip install httpx beautifulsoup4 lxml
+
+      - name: Télécharger le CSV des communes
+        run: |
+          curl -sL "https://www.data.gouv.fr/fr/datasets/r/554590ab-ae62-40ac-8353-ee75162c05ee" \
+            -o /tmp/communes.csv
+
+      - name: Scraper le batch ${{ matrix.batch }}
+        env:
+          MAX_REVIEWS: ${{ github.event.inputs.max_reviews || '10' }}
+          DELAY_MIN: "2.0"
+          DELAY_MAX: "5.0"
+        run: |
+          python ville_ideale/scripts/scrape_ville_ideale.py \
+            --communes /tmp/communes.csv \
+            --start ${{ matrix.start }} \
+            --end ${{ matrix.end }} \
+            --output /tmp/batch_${{ matrix.batch }}.csv
+
+      - name: Upload batch ${{ matrix.batch }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-${{ matrix.batch }}
+          path: /tmp/batch_${{ matrix.batch }}.csv
+          retention-days: 7
+
+  # ── Étape 3 : merge de tous les CSV ────────────────────────────────────────
+  merge:
+    needs: scrape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Télécharger tous les artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: batch-*
+          path: /tmp/batches/
+          merge-multiple: true
+
+      - name: Merger en un seul CSV
+        run: |
+          python - <<'EOF'
+          import csv, pathlib
+
+          batches = sorted(pathlib.Path("/tmp/batches").glob("batch_*.csv"))
+          print(f"Merge de {len(batches)} batches")
+
+          out = pathlib.Path("avis_ville_ideale.csv")
+          writer = None
+          total = 0
+
+          with open(out, "w", newline="", encoding="utf-8") as fout:
+              for f in batches:
+                  with open(f, encoding="utf-8") as fin:
+                      reader = csv.DictReader(fin)
+                      if writer is None:
+                          writer = csv.DictWriter(fout, fieldnames=reader.fieldnames)
+                          writer.writeheader()
+                      for row in reader:
+                          writer.writerow(row)
+                          total += 1
+
+          print(f"Total : {total} avis écrits dans {out}")
+          EOF
+
+      - name: Upload CSV final
+        uses: actions/upload-artifact@v4
+        with:
+          name: avis-ville-ideale-final
+          path: avis_ville_ideale.csv
+          retention-days: 30
