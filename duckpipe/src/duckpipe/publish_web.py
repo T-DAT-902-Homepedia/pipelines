@@ -199,12 +199,19 @@ def _content_type(path: Path) -> str:
 
 def _upload_asset(local_path: Path, gcs_uri: str, *, cache_control: str) -> None:
     """Upload gzippé avec métadonnées HTTP (l'upload_to_gcs de fetch.py ne
-    gère pas content_encoding/cache_control, helper dédié ici)."""
+    gère pas content_encoding/cache_control, helper dédié ici).
+
+    Le content_type DOIT passer par le paramètre d'upload_from_string :
+    le fixer en attribut de blob entre en conflit avec le Content-Type
+    par défaut de l'upload (text/plain) et GCS rejette en 400.
+    """
     blob = fetch._gcs_blob(gcs_uri)
     blob.content_encoding = "gzip"
-    blob.content_type = _content_type(local_path)
     blob.cache_control = cache_control
-    blob.upload_from_string(gzip.compress(local_path.read_bytes(), compresslevel=9))
+    blob.upload_from_string(
+        gzip.compress(local_path.read_bytes(), compresslevel=9),
+        content_type=_content_type(local_path),
+    )
 
 
 def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str) -> None:
