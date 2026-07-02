@@ -31,8 +31,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--delay", type=float, default=3.0,
                         help="Délai moyen entre requêtes en secondes (défaut: 3)")
-    parser.add_argument("--max-errors", type=int, default=5,
-                        help="Arrêt après N erreurs consécutives (défaut: 5)")
+    parser.add_argument("--max-errors", type=int, default=50,
+                        help="Arrêt après N erreurs consécutives (défaut: 50)")
     args = parser.parse_args()
 
     scrape_all(
