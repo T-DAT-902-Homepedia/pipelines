@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from duckpipe.node import Node, Pipeline
+from duckpipe.pipelines.dvf import PRIX_M2_MAX, PRIX_M2_MIN, SURFACE_MAX, SURFACE_MIN
+
+if TYPE_CHECKING:
+    import duckdb
+
+
+def prix_millesime(con: duckdb.DuckDBPyConnection, dvf_millesime_raw: str) -> str:
+    """Adaptation de `exploration/src/ingest_extra.py::ensure_prix_millesime`.
+
+    Table `commune_prix` : (code_commune, nb_transactions, prix_m2_median) —
+    réutilise la même chaîne DVF que le socle (dédup par mutation + nettoyage
+    de plausibilité + clipping p1-p99) sur un millésime arbitraire, mais n'en
+    garde que l'agrégat communal (léger, pour l'analyse temporelle).
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE millesime_lignes AS
+        SELECT
+            id_mutation,
+            nature_mutation,
+            type_local,
+            TRY_CAST(valeur_fonciere AS DOUBLE) AS valeur_fonciere,
+            TRY_CAST(surface_reelle_bati AS DOUBLE) AS surface_bati,
+            lpad(CAST(code_commune AS VARCHAR), 5, '0') AS code_commune,
+            nom_commune,
+            lpad(CAST(code_departement AS VARCHAR), 2, '0') AS code_departement,
+            TRY_CAST(longitude AS DOUBLE) AS longitude,
+            TRY_CAST(latitude AS DOUBLE) AS latitude
+        FROM {dvf_millesime_raw}
+        WHERE nature_mutation = 'Vente'
+          AND type_local IN ('Maison', 'Appartement')
+          AND TRY_CAST(surface_reelle_bati AS DOUBLE) > 0
+          AND TRY_CAST(valeur_fonciere AS DOUBLE) > 0
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE millesime_dedup AS
+        WITH par_mutation AS (
+            SELECT id_mutation,
+                   count(DISTINCT type_local) AS nb_types,
+                   sum(surface_bati) AS surface_totale,
+                   any_value(type_local) AS type_local,
+                   any_value(valeur_fonciere) AS valeur_fonciere,
+                   any_value(code_commune) AS code_commune,
+                   any_value(code_departement) AS code_departement,
+                   any_value(longitude) AS longitude,
+                   any_value(latitude) AS latitude
+            FROM millesime_lignes
+            GROUP BY id_mutation
+            HAVING count(DISTINCT valeur_fonciere) = 1
+               AND count(DISTINCT type_local) = 1
+        )
+        SELECT id_mutation, type_local, valeur_fonciere,
+               surface_totale AS surface_bati, code_commune, code_departement,
+               longitude, latitude,
+               valeur_fonciere / NULLIF(surface_totale, 0) AS prix_m2
+        FROM par_mutation
+        """
+    )
+    # Bornes absolues identiques à preprocess.clean_dvf (surface, coordonnées
+    # présentes, prix/m² plausible) : l'original délègue ce filtre à clean_dvf,
+    # ici réimplémenté inline (cf. décision de portage, pas d'import cross-repo).
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE millesime_bornes AS
+        SELECT * FROM millesime_dedup
+        WHERE surface_bati BETWEEN {SURFACE_MIN} AND {SURFACE_MAX}
+          AND longitude IS NOT NULL AND latitude IS NOT NULL
+          AND prix_m2 BETWEEN {PRIX_M2_MIN} AND {PRIX_M2_MAX}
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE millesime_bounds AS
+        SELECT code_departement, type_local,
+               quantile_cont(prix_m2, 0.01) AS p_lo,
+               quantile_cont(prix_m2, 0.99) AS p_hi
+        FROM millesime_bornes GROUP BY code_departement, type_local
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE millesime_clean AS
+        SELECT c.*
+        FROM millesime_bornes c
+        JOIN millesime_bounds b USING (code_departement, type_local)
+        WHERE c.prix_m2 BETWEEN b.p_lo AND b.p_hi
+        """
+    )
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE commune_prix AS
+        SELECT code_commune,
+               count(*) AS nb_transactions,
+               median(prix_m2) AS prix_m2_median
+        FROM millesime_clean
+        GROUP BY code_commune
+        """
+    )
+    return "commune_prix"
+
+
+def make_prix_millesime_pipeline(annee: int) -> Pipeline:
+    """Fabrique un Pipeline pour un millésime DVF donné.
+
+    Le catalog associé doit fournir `dvf_millesime_raw_<annee>` en entrée et
+    `commune_prix_<annee>` en sortie (voir tests/test_lot4_real_data.py).
+    L'input catalog est paramétré par année ; on adapte son nom au paramètre
+    fixe `dvf_millesime_raw` attendu par `prix_millesime()` via un wrapper.
+    """
+
+    def _node_func(con: duckdb.DuckDBPyConnection, **inputs: str) -> str:
+        dvf_millesime_raw = inputs[f"dvf_millesime_raw_{annee}"]
+        return prix_millesime(con, dvf_millesime_raw)
+
+    return Pipeline(
+        nodes=[
+            Node(
+                func=_node_func,
+                inputs=[f"dvf_millesime_raw_{annee}"],
+                outputs=[f"commune_prix_{annee}"],
+                name=f"prix_millesime_{annee}",
+            ),
+        ]
+    )
