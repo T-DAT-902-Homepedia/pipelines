@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-"""Export du gold `score_territoire` (GCS) vers un GeoJSON statique pour la webapp.
+"""Export du gold `score_territoire` (GCS) vers un GeoJSON publié pour la webapp.
 
-Le bucket `gs://homepedia-data` est privé et sans CORS : le navigateur ne peut pas
-lire les parquet. On exporte donc, hors ligne, un GeoJSON combiné (géométrie
-simplifiée + score + 12 dimensions) que la webapp sert en statique via Firebase
-Hosting et charge par un simple `fetch('/data/score.geojson')`.
+Le bucket source `gs://homepedia-data` est privé : le navigateur ne peut pas lire
+les parquet. On exporte donc un GeoJSON combiné (géométrie simplifiée + score +
+12 dimensions) et on le **publie sur le bucket public `homepedia-web`** (public +
+CORS), que le front récupère directement par HTTP comme un appel d'API.
 
-Pré-requis : `gcloud` authentifié (lecture de gs://homepedia-data) et duckdb avec
-l'extension spatial (fournie par l'env duckpipe). Lancer depuis pipelines/ :
+Pré-requis : `gcloud` authentifié (lecture `homepedia-data`, écriture
+`homepedia-web`) et duckdb avec l'extension spatial. Lancer depuis pipelines/ :
 
     cd webapp_export
-    uv run --with duckdb python export_score_geojson.py \
-        --out ../../webapp/public/data/score.geojson
+    uv run --with duckdb python export_score_geojson.py
 
-Cadence ~annuelle (le pipeline tourne @yearly) : régénérer après chaque run gold.
+Régénérer après chaque run gold. Utiliser `--local <chemin>` pour écrire un
+fichier au lieu de publier (debug).
 """
 
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import subprocess
 import tempfile
@@ -28,6 +29,9 @@ import duckdb
 
 GOLD = "gs://homepedia-data/gold/score_territoire/latest/score.parquet"
 GEOM = "gs://homepedia-data/silver/communes_geom/communes_geom.parquet"
+
+# Destination publique (bucket homepedia-web, public + CORS, servi gzip).
+DEST = "gs://homepedia-web/v1/score.geojson"
 
 # Simplification Douglas-Peucker (degrés). 0.003 ≈ ~300 m : suffisant à l'échelle
 # France/région, divise le poids par ~4 (33 Mo brut -> ~8 Mo) sans artefact visible.
@@ -86,14 +90,29 @@ def build_geojson(gold: str, geom: str) -> str:
     return con.execute(sql).fetchone()[0]
 
 
+def _publish(geojson: str, dest: str) -> None:
+    """Gzip le GeoJSON et l'upload sur le bucket public avec les bons en-têtes
+    (mêmes conventions que les objets voisins : geo+json, gzip, cache court)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        gz = Path(tmp) / "score.geojson.gz"
+        gz.write_bytes(gzip.compress(geojson.encode(), compresslevel=9))
+        subprocess.run(
+            [
+                "gcloud", "storage", "cp", str(gz), dest,
+                "--content-type=application/geo+json",
+                "--content-encoding=gzip",
+                "--cache-control=public, max-age=300",
+            ],
+            check=True,
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--out",
-        # Ancré sur l'emplacement du script (pas le cwd) : lancé depuis n'importe
-        # où, le fichier atterrit toujours dans webapp/public/data/.
-        default=str(Path(__file__).resolve().parents[2] / "webapp/public/data/score.geojson"),
-        help="chemin de sortie du GeoJSON (défaut : webapp/public/data/score.geojson)",
+        "--local",
+        metavar="CHEMIN",
+        help="écrire un fichier au lieu de publier sur le bucket (debug)",
     )
     args = parser.parse_args()
 
@@ -108,11 +127,17 @@ def main() -> int:
         print("[export] jointure + simplification + GeoJSON...")
         geojson = build_geojson(str(gold_local), str(geom_local))
 
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(geojson)
     n = len(json.loads(geojson)["features"])
-    print(f"[export] écrit {out} — {len(geojson) / 1e6:.1f} Mo, {n} communes")
+    size = len(geojson) / 1e6
+    if args.local:
+        out = Path(args.local)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(geojson)
+        print(f"[export] écrit {out} — {size:.1f} Mo, {n} communes")
+    else:
+        print(f"[export] publication -> {DEST} ({size:.1f} Mo brut, {n} communes)")
+        _publish(geojson, DEST)
+        print("[export] publié.")
     return 0
 
 
