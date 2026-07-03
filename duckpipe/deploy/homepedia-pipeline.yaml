@@ -113,6 +113,26 @@ main:
           job_name: ${job_name}
           cli_args: ${["run", "score", "--env", "prod", "--year", string(year), "--run-date", run_date]}
 
+    # Agrège le silver avis (produit hors-DAG par le workflow GitHub nlp-avis.yml,
+    # chemins stables non millésimés) en gold avis_commune. Indépendant du score,
+    # placé séquentiellement pour garder le DAG simple. Toléré si le silver avis
+    # n'a jamais été produit : publish-web retombe alors sur le stub, le reste du
+    # DAG ne doit pas échouer pour autant.
+    - avis_gold:
+        try:
+          call: run_duckpipe
+          args:
+            job_name: ${job_name}
+            cli_args: ${["run", "avis", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+        except:
+          as: e
+          steps:
+            - warn_avis:
+                call: sys.log
+                args:
+                  text: '${"avis_gold ignore (silver avis absent ?) " + json.encode_to_string(e)}'
+                  severity: "WARNING"
+
     - validate_gold:
         call: run_duckpipe
         args:
