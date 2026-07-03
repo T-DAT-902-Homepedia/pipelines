@@ -21,7 +21,7 @@ import logging
 import sys
 from pathlib import Path
 
-from duckpipe import catalogs, fetch, quality, sources, validation
+from duckpipe import catalogs, fetch, publish_web, quality, sources, validation
 from duckpipe.connection import get_connection
 from duckpipe.fetch_climat import CLIMAT_BRONZE_PATH, build_stations_csv
 from duckpipe.fetch_dpe import DPE_BRONZE_PATH, build_dpe_sample
@@ -149,6 +149,16 @@ def cmd_publish(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_publish_web(args: argparse.Namespace) -> None:
+    env = catalogs.get_environment(args.env, local_root=args.local_root)
+    con = get_connection()
+    try:
+        publish_web.publish_web(con, env, year=args.year, run_date=args.run_date)
+    finally:
+        con.close()
+    logger.info("[ok] publish_web")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="duckpipe")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -181,6 +191,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub_pub = subparsers.add_parser("publish", help="copie le score du run vers latest/")
     add_common(sub_pub)
     sub_pub.set_defaults(func=cmd_publish)
+
+    sub_web = subparsers.add_parser(
+        "publish-web", help="génère et publie les artefacts web statiques"
+    )
+    add_common(sub_web)
+    sub_web.set_defaults(func=cmd_publish_web)
 
     return parser
 

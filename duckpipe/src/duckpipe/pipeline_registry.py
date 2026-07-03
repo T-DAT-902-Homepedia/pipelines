@@ -6,7 +6,7 @@ from duckpipe.pipelines.dpe import dpe_pipeline
 from duckpipe.pipelines.dvf import dvf_pipeline
 from duckpipe.pipelines.emploi import emploi_pipeline
 from duckpipe.pipelines.equipements import equipements_pipeline
-from duckpipe.pipelines.geometries import geometries_pipeline
+from duckpipe.pipelines.geometries import geometries_pipeline, geometries_web_pipeline
 from duckpipe.pipelines.proximite_metropole import proximite_metropole_pipeline
 from duckpipe.pipelines.revenus import revenus_pipeline
 from duckpipe.pipelines.risques import risques_pipeline
@@ -27,6 +27,7 @@ def register_pipelines() -> dict[str, Pipeline]:
     return {
         "dvf": dvf_pipeline,
         "geometries": geometries_pipeline,
+        "geometries_web": geometries_web_pipeline,
         "transport": transport_pipeline,
         "revenus": revenus_pipeline,
         "risques": risques_pipeline,

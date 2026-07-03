@@ -26,6 +26,10 @@ from duckpipe.fetch_dpe import DPE_BRONZE_PATH
 from duckpipe.sources import DVF_URL_TEMPLATE, SOURCES  # noqa: F401 — DVF_URL réexporté
 
 GCS_BUCKET = "gs://homepedia-data"
+# Bucket public servant les artefacts web statiques à la webapp (cf. ADR-0013).
+WEB_BUCKET = "gs://homepedia-web"
+# Millésimes DVF annexes intégrés à l'évolution des prix des fiches communes.
+WEB_MILLESIMES = [2021, 2022]
 
 
 @dataclass(frozen=True)
@@ -64,8 +68,14 @@ def get_environment(name: str, *, local_root: str = "data") -> Environment:
 SILVER_PATHS = {
     "commune_geom": "communes_geom/communes_geom.parquet",  # GeoParquet
     "dept_geom": "dept_geom/dept_geom.parquet",  # GeoParquet
+    # Variantes pré-simplifiées Etalab pour les LOD web (ADR-0013)
+    "commune_geom_1000m": "communes_geom/communes_geom_1000m.parquet",
+    "dept_geom_100m": "dept_geom/dept_geom_100m.parquet",
+    "dept_geom_1000m": "dept_geom/dept_geom_1000m.parquet",
     "dvf": "dvf_clean/year={year}/dvf.parquet",
     "commune_agg": "commune_agg/year={year}/commune_agg.parquet",
+    "commune_agg_type": "commune_agg_type/year={year}/commune_agg_type.parquet",
+    "dept_agg": "dept_agg/year={year}/dept_agg.parquet",
     "commune_transport": "transport_commune/transport_commune.parquet",
     "revenus": "revenus_commune/revenus.parquet",
     "risques": "risques_commune/risques.parquet",
@@ -93,6 +103,17 @@ def dq_report_path(env: Environment, kind: str, run_date: str) -> str:
     return f"{env.gold_root}/dq_reports/{kind}_{run_date}.json"
 
 
+def web_root(env: Environment) -> str:
+    """Racine des artefacts web : bucket public en prod, dossier local sinon."""
+    if env.gold_root.startswith("gs://"):
+        return f"{WEB_BUCKET}/v1"
+    return f"{env.gold_root.rsplit('/', 1)[0]}/web/v1"
+
+
+def web_run_root(env: Environment, run_date: str) -> str:
+    return f"{web_root(env)}/runs/{run_date}"
+
+
 def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
     """Catalog complet : chaque nom logique du registry vers son Dataset.
 
@@ -116,6 +137,18 @@ def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
     catalog.add(
         "depts_raw",
         GeoJsonDataset(f"{bronze}/{SOURCES['geometries_departements'].bronze_path}"),
+    )
+    catalog.add(
+        "communes_1000m_raw",
+        GeoJsonDataset(f"{bronze}/{SOURCES['geometries_communes_1000m'].bronze_path}"),
+    )
+    catalog.add(
+        "depts_100m_raw",
+        GeoJsonDataset(f"{bronze}/{SOURCES['geometries_departements_100m'].bronze_path}"),
+    )
+    catalog.add(
+        "depts_1000m_raw",
+        GeoJsonDataset(f"{bronze}/{SOURCES['geometries_departements_1000m'].bronze_path}"),
     )
     catalog.add("arrets_raw", CsvDataset(f"{bronze}/{SOURCES['transport'].bronze_path}"))
     catalog.add(
@@ -169,10 +202,15 @@ def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
         path = f"{env.silver_root}/{relative_path.format(year=year)}"
         catalog.add(name, ParquetDataset(path))
     catalog.add("arrets", MemoryDataset())  # intermédiaire transport, jamais persisté
-    catalog.add(
-        f"commune_prix_{year}",
-        ParquetDataset(f"{env.silver_root}/commune_prix/year={year}/commune_prix.parquet"),
-    )
+    # Millésimes DVF annexes : l'année du run + ceux consommés par l'export web
+    # (l'évolution des prix des fiches communes, cf. WEB_MILLESIMES).
+    for annee in {year, *WEB_MILLESIMES}:
+        catalog.add(
+            f"commune_prix_{annee}",
+            ParquetDataset(
+                f"{env.silver_root}/commune_prix/year={annee}/commune_prix.parquet"
+            ),
+        )
 
     # --- Gold ----------------------------------------------------------------
     catalog.add("score_territoire", ParquetDataset(gold_score_path(env, run_date)))

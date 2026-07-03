@@ -57,6 +57,33 @@ SOURCES: dict[str, SourceSpec] = {
         ),
         bronze_path="geom/departements-50m.geojson",
     ),
+    # Contours pré-simplifiés Etalab pour les LOD des choroplèthes web
+    # (ADR-0013) : générés par le producteur avec une topologie cohérente,
+    # là où ST_CoverageSimplify s'est révélé non déterministe (cf. ADR-0008).
+    "geometries_communes_1000m": SourceSpec(
+        name="geometries_communes_1000m",
+        url=(
+            "https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/"
+            "geojson/communes-1000m.geojson"
+        ),
+        bronze_path="geom/communes-1000m.geojson",
+    ),
+    "geometries_departements_100m": SourceSpec(
+        name="geometries_departements_100m",
+        url=(
+            "https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/"
+            "geojson/departements-100m.geojson"
+        ),
+        bronze_path="geom/departements-100m.geojson",
+    ),
+    "geometries_departements_1000m": SourceSpec(
+        name="geometries_departements_1000m",
+        url=(
+            "https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/"
+            "geojson/departements-1000m.geojson"
+        ),
+        bronze_path="geom/departements-1000m.geojson",
+    ),
     "transport": SourceSpec(
         name="transport",
         url="https://transport.data.gouv.fr/resources/81333/download",

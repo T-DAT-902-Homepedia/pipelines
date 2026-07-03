@@ -136,9 +136,63 @@ def commune_agg(con: duckdb.DuckDBPyConnection, dvf: str) -> str:
     return "commune_agg"
 
 
+def commune_agg_type(con: duckdb.DuckDBPyConnection, dvf: str) -> str:
+    """Agrégats communaux ventilés par type de local (Maison/Appartement).
+
+    Grain distinct de `commune_agg` (qui reste tous types confondus car il
+    alimente le score) : sert le filtre type_local de la carte choroplèthe.
+    Même seuil de fiabilité (>= 5 transactions au grain commune×type).
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE commune_agg_type AS
+        SELECT
+            code_commune,
+            type_local,
+            any_value(nom_commune) AS nom_commune,
+            any_value(code_departement) AS code_departement,
+            count(*) AS nb_transactions,
+            median(prix_m2) AS prix_m2_median,
+            count(*) >= 5 AS fiable
+        FROM {dvf}
+        GROUP BY code_commune, type_local
+        """
+    )
+    return "commune_agg_type"
+
+
+def dept_agg(con: duckdb.DuckDBPyConnection, dvf: str) -> str:
+    """Agrégats départementaux, tous types confondus ET par type de local.
+
+    `type_local` vaut NULL sur les lignes tous-types (GROUPING SETS) : c'est
+    la convention consommée par l'export choroplèthe départements.
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE dept_agg AS
+        SELECT
+            code_departement,
+            type_local,
+            count(*) AS nb_transactions,
+            median(prix_m2) AS prix_m2_median,
+            count(*) >= 5 AS fiable
+        FROM {dvf}
+        GROUP BY GROUPING SETS ((code_departement), (code_departement, type_local))
+        """
+    )
+    return "dept_agg"
+
+
 dvf_pipeline = Pipeline(
     nodes=[
         Node(func=ingest_dvf, inputs=["dvf_raw"], outputs=["dvf"], name="ingest_dvf"),
         Node(func=commune_agg, inputs=["dvf"], outputs=["commune_agg"], name="commune_agg"),
+        Node(
+            func=commune_agg_type,
+            inputs=["dvf"],
+            outputs=["commune_agg_type"],
+            name="commune_agg_type",
+        ),
+        Node(func=dept_agg, inputs=["dvf"], outputs=["dept_agg"], name="dept_agg"),
     ]
 )

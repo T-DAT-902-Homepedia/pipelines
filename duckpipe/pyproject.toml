@@ -25,6 +25,10 @@ line-length = 88
 select = ["F", "W", "E", "I", "UP", "PL", "T201"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# Les valeurs attendues des assertions de test ne sont pas des magic numbers.
+"tests/*" = ["PLR2004"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
