@@ -19,6 +19,7 @@ Cadence ~annuelle (le pipeline tourne @yearly) : régénérer après chaque run 
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -41,12 +42,16 @@ DIMENSIONS = [
 
 
 def _gcs_download(uri: str, dest: Path) -> None:
-    subprocess.run(
-        ["gcloud", "storage", "cp", uri, str(dest)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    # Pas de capture_output : on laisse gcloud écrire son propre stderr (message
+    # d'auth/permission utile), sinon un échec ne remonte qu'un "exit status 1"
+    # opaque au prochain run annuel.
+    try:
+        subprocess.run(["gcloud", "storage", "cp", uri, str(dest)], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            f"[export] échec gcloud cp {uri} (exit {exc.returncode}). "
+            "Vérifier l'auth : gcloud auth login"
+        ) from exc
 
 
 def build_geojson(gold: str, geom: str) -> str:
@@ -85,7 +90,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--out",
-        default="../../webapp/public/data/score.geojson",
+        # Ancré sur l'emplacement du script (pas le cwd) : lancé depuis n'importe
+        # où, le fichier atterrit toujours dans webapp/public/data/.
+        default=str(Path(__file__).resolve().parents[2] / "webapp/public/data/score.geojson"),
         help="chemin de sortie du GeoJSON (défaut : webapp/public/data/score.geojson)",
     )
     args = parser.parse_args()
@@ -104,7 +111,7 @@ def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(geojson)
-    n = geojson.count('"type":"Feature"') or geojson.count('"type": "Feature"')
+    n = len(json.loads(geojson)["features"])
     print(f"[export] écrit {out} — {len(geojson) / 1e6:.1f} Mo, {n} communes")
     return 0
 
