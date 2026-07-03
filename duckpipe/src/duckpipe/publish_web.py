@@ -88,6 +88,16 @@ def _load_tables(con: duckdb.DuckDBPyConnection, catalog, year: int) -> dict[int
             millesimes[annee] = table
         except DatasetError:
             logger.warning("[warn] millésime %s absent, évolution sans cette année", annee)
+
+    # Avis : optionnels (étape NLP externe, couverture partielle). Si absents,
+    # on matérialise une table vide typée pour que fiches/exports se construisent
+    # quand même (fiche.avis = null, aucun artefact avis écrit).
+    try:
+        catalog.load(con, "avis_commune")
+    except DatasetError:
+        logger.warning("[warn] avis_commune absent, export web sans analyse d'avis")
+        export_web.create_avis_stub(con)
+
     return millesimes
 
 
@@ -160,12 +170,30 @@ def _generate_artifacts(
         "score_territoire",
         "web_evolution",
         *FICHE_TABLES,
+        "avis_commune",
     )
     for dept in departements:
         _copy_json(
             con,
             f"SELECT * FROM web_fiches WHERE code_departement = '{dept}' ORDER BY code_commune",
             staging / "communes" / f"{dept}.json",
+        )
+
+    # Analyse d'avis : un fichier par département présent (aligné sur communes/).
+    # Vide (stub) → aucun fichier, la webapp feature-gate via meta.schema_version.
+    export_web.build_avis(con, "avis_commune")
+    avis_departements = [
+        row[0]
+        for row in con.execute(
+            "SELECT DISTINCT code_departement FROM web_avis "
+            "WHERE code_departement IS NOT NULL ORDER BY 1"
+        ).fetchall()
+    ]
+    for dept in avis_departements:
+        _copy_json(
+            con,
+            f"SELECT * FROM web_avis WHERE code_departement = '{dept}' ORDER BY code_commune",
+            staging / "avis" / f"{dept}.json",
         )
 
     export_web.build_search_index(con, "commune_geom", "commune_agg", "score_territoire")
@@ -180,8 +208,11 @@ def _generate_artifacts(
 
 
 def _build_meta(con: duckdb.DuckDBPyConnection, year: int, run_date: str) -> dict:
+    # schema_version 2 : les fiches gagnent le champ `avis` et une famille
+    # d'artefacts `avis/{dept}.json` apparaît. La webapp feature-gate l'onglet
+    # Avis sur cette version (0 commune avis = onglet masqué).
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_date": run_date,
         "year": year,
         "base": f"runs/{run_date}",
@@ -189,6 +220,7 @@ def _build_meta(con: duckdb.DuckDBPyConnection, year: int, run_date: str) -> dic
         "nb_communes_scorees": con.execute(
             "SELECT count(*) FROM web_fiches WHERE score IS NOT NULL"
         ).fetchone()[0],
+        "nb_communes_avis": con.execute("SELECT count(*) FROM web_avis").fetchone()[0],
         "generated_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
     }
 

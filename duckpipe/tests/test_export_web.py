@@ -105,6 +105,95 @@ def test_choropleth_communes_properties(full_con, tmp_path: Path) -> None:
     assert iles["code_departement"] == "2A"
 
 
+def _seed_avis(con) -> None:
+    """Table gold ``avis_commune`` synthétique : Alpha (riche), Beta (low_data)."""
+    con.execute(
+        """
+        CREATE TABLE avis_commune AS
+        SELECT
+            '01001' AS code_commune, 'Alpha' AS nom_ville, 12 AS n_avis,
+            DATE '2019-05-01' AS date_min, DATE '2025-01-01' AS date_max,
+            0.42 AS sentiment_global, false AS low_data,
+            [{'theme': 'calme', 'n_segments': 8, 'pct_positive': 0.7,
+              'pct_negative': 0.2, 'score': 0.5}] AS themes,
+            [{'word': 'calme', 'weight': 9, 'sentiment': 'positive',
+              'themes': ['calme']}] AS wordcloud,
+            [{'word': 'calme', 'weight': 9, 'sentiment': 'positive'}] AS wordcloud_preview,
+            [{'text': 'Quartier très calme et familial, idéal pour les enfants.',
+              'label': 'Positif', 'theme': 'calme', 'mois': '2024-03',
+              'source': 'Ville-idéale'}] AS verbatims
+        UNION ALL
+        SELECT
+            '01002', 'Beta', 4, DATE '2022-01-01', DATE '2023-01-01',
+            -0.1, true,
+            [{'theme': 'transports', 'n_segments': 3, 'pct_positive': 0.3,
+              'pct_negative': 0.6, 'score': -0.3}],
+            [{'word': 'bruit', 'weight': 3, 'sentiment': 'negative',
+              'themes': ['calme']}],
+            [{'word': 'bruit', 'weight': 3, 'sentiment': 'negative'}],
+            [{'text': 'Stationnement compliqué le soir, il faut tourner longtemps.',
+              'label': 'Négatif', 'theme': 'transports', 'mois': '2022-06',
+              'source': 'Ville-idéale'}]
+        """
+    )
+
+
+def test_build_avis_masks_themes_when_low_data(full_con) -> None:
+    _seed_avis(full_con)
+    export_web.build_avis(full_con, "avis_commune")
+    rows = {
+        r[0]: r
+        for r in full_con.execute(
+            "SELECT code_commune, code_departement, low_data, themes, sentiment_global, source "
+            "FROM web_avis"
+        ).fetchall()
+    }
+    alpha = rows["01001"]
+    assert alpha[1] == "01"  # code_departement dérivé
+    assert alpha[2] is False
+    assert alpha[3] is not None  # thèmes conservés (riche)
+    assert alpha[4] == 0.42
+    assert alpha[5] == "Ville-idéale"
+
+    beta = rows["01002"]
+    assert beta[2] is True
+    assert beta[3] is None  # thèmes masqués (low_data)
+
+
+def test_avis_stub_is_empty_and_typed(full_con) -> None:
+    export_web.create_avis_stub(full_con)
+    n = full_con.execute("SELECT count(*) FROM avis_commune").fetchone()[0]
+    assert n == 0
+    # build_avis sur le stub produit une table vide sans erreur de type
+    export_web.build_avis(full_con, "avis_commune")
+    assert full_con.execute("SELECT count(*) FROM web_avis").fetchone()[0] == 0
+
+
+def test_fiches_build_with_avis_stub(full_con) -> None:
+    # Fiches doivent se construire même sans avis (avis = null partout).
+    export_web.build_evolution(full_con, "commune_agg", 2024, {})
+    for name, cols in [
+        ("revenus", "24000.0 AS revenu_median"),
+        ("emploi", "6.0 AS taux_chomage, 0.9 AS taux_couverture_emploi, 500 AS pop_active"),
+        ("commune_transport", "1.5 AS densite_arrets_km2, 12 AS nb_arrets"),
+        ("equipements", "3 AS nb_services_sante, 2 AS nb_loisirs_culture"),
+        ("securite", "30.0 AS taux_delinquance_global, 800 AS insee_pop"),
+        ("tourisme", "0.05 AS part_residences_secondaires"),
+        ("risques", "2 AS nb_arretes_catnat"),
+        ("climat", "1900.0 AS ensoleillement_h_an, 12.0 AS temperature_moy_annuelle"),
+        ("proximite_metropole", "30.0 AS dist_metropole_km, 'Lyon' AS nom_metropole"),
+    ]:
+        full_con.execute(f"CREATE TABLE {name} AS SELECT '01001' AS code_commune, {cols}")
+    export_web.create_avis_stub(full_con)
+    export_web.build_fiches(
+        full_con, "commune_geom", "commune_agg", "commune_agg_type", "score_territoire",
+        "web_evolution", "revenus", "emploi", "commune_transport", "equipements",
+        "securite", "tourisme", "risques", "climat", "proximite_metropole", "avis_commune",
+    )
+    avis_vals = full_con.execute("SELECT avis FROM web_fiches").fetchall()
+    assert all(v[0] is None for v in avis_vals)
+
+
 def test_fiches_structure(full_con, tmp_path: Path) -> None:
     full_con.execute("CREATE TABLE commune_prix_2021 AS SELECT '01001' AS code_commune, "
                      "38 AS nb_transactions, 1900.0 AS prix_m2_median")
@@ -122,6 +211,7 @@ def test_fiches_structure(full_con, tmp_path: Path) -> None:
     ]:
         full_con.execute(f"CREATE TABLE {name} AS SELECT '01001' AS code_commune, {cols}")
 
+    _seed_avis(full_con)
     export_web.build_fiches(
         full_con,
         "commune_geom",
@@ -140,6 +230,7 @@ def test_fiches_structure(full_con, tmp_path: Path) -> None:
             "climat",
             "proximite_metropole",
         ],
+        "avis_commune",
     )
     dest = tmp_path / "fiches.json"
     full_con.execute(f"COPY (SELECT * FROM web_fiches ORDER BY code_commune) TO '{dest}' "
@@ -152,11 +243,16 @@ def test_fiches_structure(full_con, tmp_path: Path) -> None:
     assert alpha["score"]["composantes"]["n_emploi"] == 0.6
     assert alpha["indicateurs"]["nom_metropole"] == "Lyon"
     assert [entry["annee"] for entry in alpha["evolution"]] == [2021, 2024]
+    # aperçu avis embarqué dans la fiche
+    assert alpha["avis"]["n_avis"] == 12
+    assert alpha["avis"]["low_data"] is False
+    assert len(alpha["avis"]["mini_cloud"]) == 1
 
     iles = fiches["2A004"]  # jamais 404 : fiche présente, score/prix null
     assert iles["prix"] is None
     assert iles["score"] is None
     assert iles["indicateurs"]["surface_km2"] == 8.0
+    assert iles["avis"] is None  # pas d'avis pour cette commune
 
     fantome = fiches["99999"]  # scorée mais absente des contours : fiche quand même
     assert fantome["score"]["score_valeur"] == 0.3
