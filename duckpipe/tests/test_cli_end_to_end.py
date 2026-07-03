@@ -12,6 +12,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from duckpipe import export_web
 from duckpipe.__main__ import main
 
 EXPLORATION_RAW = Path(__file__).parents[2].parent / "exploration" / "data" / "raw"
@@ -108,12 +109,18 @@ def test_full_dag_via_cli(tmp_path: Path) -> None:
     assert meta["nb_communes_scorees"] == REF_N_COMMUNES_SCOREES
 
     run_root = web / "runs" / RUN_DATE
-    communes_mid = json.loads((run_root / "choropleth" / "communes-mid.geojson").read_text())
+    communes_mid_path = run_root / "choropleth" / "communes-mid.geojson"
+    communes_mid = json.loads(communes_mid_path.read_text())
     assert len(communes_mid["features"]) == REF_N_COMMUNES
     sample = communes_mid["features"][0]["properties"]
     assert {"code_commune", "prix_m2_median", "maison_prix_m2_median", "score_valeur"} <= set(
         sample
     )
+    assert {"gap", "dpe_dominant", "n_prix", "n_emploi"} <= set(sample)
+    # Garde-fou : l'ajout des dimensions du score (ADR-0014) ne doit pas faire
+    # déraper le poids de la choroplèthe nationale (30,3 Mo bruts mesurés,
+    # 3,4 Mo gzippés servis).
+    assert communes_mid_path.stat().st_size < 40_000_000
 
     depts_low = json.loads(
         (run_root / "choropleth" / "departements-low.geojson").read_text()
@@ -139,3 +146,27 @@ def test_full_dag_via_cli(tmp_path: Path) -> None:
     classement = json.loads((run_root / "classements" / "gap-pondere.json").read_text())
     assert len(classement) == 100
     assert classement[0]["rang"] == 1
+
+    _assert_score_compat(web)
+
+
+def _assert_score_compat(web: Path) -> None:
+    """score.geojson de compatibilité (ADR-0014) : contrat de l'ancien
+    webapp_export — communes scorées avec contours uniquement (les scorées
+    hors contours, comptées dans REF_N_FICHES, en sont exclues), à la racine
+    v1/ hors du run."""
+    score = json.loads((web / "score.geojson").read_text())
+    assert len(score["features"]) == REF_N_COMMUNES_SCOREES - (REF_N_FICHES - REF_N_COMMUNES)
+    props = score["features"][0]["properties"]
+    assert set(props) == {
+        "code_commune",
+        "nom",
+        "dep",
+        "prix",
+        "nb_transactions",
+        "dpe",
+        "score_valeur",
+        "gap",
+        "gap_pondere",
+        *export_web.SCORE_DIMENSIONS,
+    }

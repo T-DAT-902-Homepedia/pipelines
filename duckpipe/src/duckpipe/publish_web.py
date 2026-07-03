@@ -230,6 +230,13 @@ def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str
     if not is_remote:
         staging = Path(run_root)
         _generate_artifacts(con, staging, year, millesimes)
+        export_web.build_score_geojson_compat(con, "web_choropleth_communes_mid")
+        _copy_geojson(
+            con,
+            "SELECT * FROM web_score_compat",
+            Path(catalogs.web_root(env)) / "score.geojson",
+            precision=PRECISION_MID,
+        )
         meta = _build_meta(con, year, run_date)
         meta_path = Path(catalogs.web_root(env)) / "meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,6 +263,18 @@ def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str
             ]
             for future in futures:
                 future.result()
+
+        # score.geojson de compatibilité (déprécié, cf. ADR-0014) : muté en
+        # place à la racine v1/, hors du run immuable (écrit dans staging
+        # APRÈS la collecte rglob), cache court comme meta.json.
+        export_web.build_score_geojson_compat(con, "web_choropleth_communes_mid")
+        compat_local = staging / "score.geojson"
+        _copy_geojson(
+            con, "SELECT * FROM web_score_compat", compat_local, precision=PRECISION_MID
+        )
+        _upload_asset(
+            compat_local, f"{catalogs.web_root(env)}/score.geojson", cache_control=CACHE_META
+        )
 
         # meta.json en dernier : le run devient visible atomiquement.
         meta_local = staging / "meta.json"

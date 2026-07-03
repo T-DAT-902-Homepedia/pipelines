@@ -96,13 +96,57 @@ def test_choropleth_communes_properties(full_con, tmp_path: Path) -> None:
     assert alpha["maison_prix_m2_median"] == 2100.0
     assert alpha["appart_fiable"] is False
     assert alpha["score_valeur"] == 0.6
+    assert alpha["gap"] == 0.1
+    assert alpha["dpe_dominant"] == "D"
+    assert alpha["n_emploi"] == 0.6
 
     iles = features["2A004"]  # commune sans transaction ni score
     assert iles["prix_m2_median"] is None
     assert iles["nb_transactions"] == 0
     assert iles["fiable"] is False
     assert iles["score_valeur"] is None
+    assert iles["dpe_dominant"] is None
+    assert iles["n_prix"] is None
     assert iles["code_departement"] == "2A"
+
+
+def test_score_compat_contract(full_con, tmp_path: Path) -> None:
+    """Contrat hérité de webapp_export/export_score_geojson.py (ADR-0014) :
+    communes scorées avec géométrie uniquement, noms de properties exacts."""
+    choropleth = export_web.build_choropleth_communes(
+        full_con, "commune_geom", "commune_agg", "commune_agg_type", "score_territoire"
+    )
+    export_web.build_score_geojson_compat(full_con, choropleth)
+    dest = tmp_path / "score.geojson"
+    full_con.execute(
+        f"COPY (SELECT * FROM web_score_compat) TO '{dest}' "
+        f"(FORMAT GDAL, DRIVER 'GeoJSON', LAYER_CREATION_OPTIONS 'COORDINATE_PRECISION=3')"
+    )
+
+    features = json.loads(dest.read_text())["features"]
+    # 01001 seule : 01002/2A004 non scorées, 99999 scorée mais sans contour.
+    assert [f["properties"]["code_commune"] for f in features] == ["01001"]
+
+    alpha = features[0]["properties"]
+    expected_keys = {
+        "code_commune",
+        "nom",
+        "dep",
+        "prix",
+        "nb_transactions",
+        "dpe",
+        "score_valeur",
+        "gap",
+        "gap_pondere",
+        *export_web.SCORE_DIMENSIONS,
+    }
+    assert set(alpha) == expected_keys
+    assert alpha["nom"] == "Alpha"
+    assert alpha["dep"] == "01"
+    assert alpha["prix"] == 2000
+    assert alpha["dpe"] == "D"
+    assert alpha["gap"] == 0.1
+    assert alpha["n_emploi"] == 0.6
 
 
 def test_fiches_structure(full_con, tmp_path: Path) -> None:

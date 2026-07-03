@@ -27,6 +27,23 @@ DEPT_EXPR = (
 # l'ADR-0008), et une simplification par feature créerait des interstices
 # entre polygones voisins.
 
+# Dimensions normalisées du score gold, exposées telles quelles dans les
+# properties de la choroplèthe communale et les composantes des fiches.
+SCORE_DIMENSIONS = [
+    "n_prix",
+    "n_transport",
+    "n_access_fin",
+    "n_risques",
+    "n_tourisme",
+    "n_securite",
+    "n_services",
+    "n_loisirs",
+    "n_ensoleillement",
+    "n_emploi",
+    "n_proximite",
+    "n_dpe",
+]
+
 
 def build_choropleth_communes(  # noqa: PLR0913 — une entrée par table jointe, convention Node
     con: duckdb.DuckDBPyConnection,
@@ -61,6 +78,9 @@ def build_choropleth_communes(  # noqa: PLR0913 — une entrée par table jointe
             coalesce(ap.fiable, false) AS appart_fiable,
             s.score_valeur,
             s.gap_pondere,
+            round(s.gap, 3) AS gap,
+            s.dpe_dominant,
+            {", ".join(f"round(s.{d}, 3) AS {d}" for d in SCORE_DIMENSIONS)},
             g.geom
         FROM {commune_geom} g
         LEFT JOIN {commune_agg} a USING (code_commune)
@@ -303,3 +323,38 @@ def build_classement(
         """
     )
     return "web_classement"
+
+
+def build_score_geojson_compat(
+    con: duckdb.DuckDBPyConnection,
+    choropleth_communes: str,
+    *,
+    out_table: str = "web_score_compat",
+) -> str:
+    """Table du `v1/score.geojson` de compatibilité, DÉPRÉCIÉ (cf. ADR-0014).
+
+    Reprend le contrat de l'ancien script webapp_export/export_score_geojson.py
+    (supprimé) le temps que la webapp migre vers meta.json + runs/ : communes
+    scorées uniquement, mêmes noms de properties. À retirer une fois la
+    migration du front confirmée en prod.
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE {out_table} AS
+        SELECT
+            code_commune,
+            nom,
+            code_departement AS dep,
+            CAST(round(prix_m2_median) AS INTEGER) AS prix,
+            nb_transactions,
+            dpe_dominant AS dpe,
+            round(score_valeur, 3) AS score_valeur,
+            gap,
+            round(gap_pondere, 3) AS gap_pondere,
+            {", ".join(SCORE_DIMENSIONS)},
+            geom
+        FROM {choropleth_communes}
+        WHERE score_valeur IS NOT NULL
+        """
+    )
+    return out_table
