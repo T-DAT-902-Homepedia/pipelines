@@ -137,6 +137,24 @@ def cmd_validate_gold(args: argparse.Namespace) -> None:
             previous_top=previous_top,
             report_dest=catalogs.dq_report_path(env, "gold", args.run_date),
         )
+
+        # Contrôles gold des avis, si l'étape NLP a produit la table (facultatif :
+        # la couverture avis est partielle et le pipeline peut tourner sans).
+        avis_uri = catalogs.gold_avis_path(env, args.run_date)
+        avis_exists = (
+            fetch.gcs_exists(avis_uri) if fetch.is_gcs_uri(avis_uri) else Path(avis_uri).exists()
+        )
+        if avis_exists:
+            with fetch.local_read_path(avis_uri) as avis_path:
+                con.execute(
+                    "CREATE TABLE avis_commune AS SELECT * FROM "
+                    f"read_parquet('{avis_path}')"
+                )
+            validation.validate_gold_avis(
+                con, report_dest=catalogs.dq_report_path(env, "gold_avis", args.run_date)
+            )
+        else:
+            logger.warning("[warn] avis_commune absent, contrôle gold avis ignoré")
     finally:
         con.close()
     logger.info("[ok] validate_gold")

@@ -289,6 +289,34 @@ DPE_RULES = [
     Rule("code commune sur 5 caracteres", "length(code_commune) <> 5", critical=True),
 ]
 
+# Avis ville-ideale (produits par l'étape NLP externe). La couverture est
+# volontairement partielle (quelques milliers de communes au mieux) : aucune
+# règle de couverture ici, seulement la cohérence intrinsèque.
+AVIS_RULES = [
+    Rule("code commune sur 5 caracteres", "length(code_commune) <> 5", critical=True),
+    Rule(
+        "date presente et plausible (>= 2005)",
+        "date_avis IS NOT NULL AND date_avis < DATE '2005-01-01'",
+        critical=True,
+    ),
+    Rule(
+        "note moyenne dans [0, 10]",
+        "note_moyenne IS NOT NULL AND (note_moyenne < 0 OR note_moyenne > 10)",
+        critical=True,
+    ),
+]
+
+AVIS_SEGMENTS_RULES = [
+    Rule("code commune sur 5 caracteres", "length(code_commune) <> 5", critical=True),
+    Rule("sentiment dans [-1, 1]", "sentiment < -1 OR sentiment > 1", critical=True),
+    Rule(
+        "champ de polarite attendu (positif/negatif)",
+        "polarity_field NOT IN ('positif', 'negatif')",
+        critical=True,
+    ),
+    Rule("texte de segment non vide", "length(trim(text)) < 15"),
+]
+
 # Association table silver -> règles, consommée par validate_silver.
 SILVER_RULES: dict[str, list[Rule]] = {
     "dvf": DVF_RULES,
@@ -302,4 +330,6 @@ SILVER_RULES: dict[str, list[Rule]] = {
     "tourisme": TOURISME_RULES,
     "proximite_metropole": PROXIMITE_METROPOLE_RULES,
     "dpe": DPE_RULES,
+    "avis": AVIS_RULES,
+    "avis_segments": AVIS_SEGMENTS_RULES,
 }
