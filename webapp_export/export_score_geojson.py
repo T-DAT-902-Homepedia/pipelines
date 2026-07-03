@@ -33,8 +33,11 @@ GEOM = "gs://homepedia-data/silver/communes_geom/communes_geom.parquet"
 # Destination publique (bucket homepedia-web, public + CORS, servi gzip).
 DEST = "gs://homepedia-web/v1/score.geojson"
 
-# Simplification Douglas-Peucker (degrés). 0.003 ≈ ~300 m : suffisant à l'échelle
-# France/région, divise le poids par ~4 (33 Mo brut -> ~8 Mo) sans artefact visible.
+# Tolérance de simplification (degrés). 0.003 ≈ ~300 m : divise le poids par ~4
+# (33 Mo brut -> ~8 Mo). Appliquée en simplification de COUVERTURE (topologique)
+# et non par commune -> les bords partagés restent cohérents (pas de trous).
+# Baisser (ex. 0.0015) pour des contours plus fins en zone dense (Paris), au prix
+# d'un fichier plus lourd.
 SIMPLIFY_TOL = 0.003
 
 # 12 dimensions normalisées du score (0–1), reprises telles quelles dans les properties.
@@ -43,6 +46,30 @@ DIMENSIONS = [
     "n_securite", "n_services", "n_loisirs", "n_ensoleillement", "n_emploi",
     "n_proximite", "n_dpe",
 ]
+
+# Correspondance INSEE département -> région. La simplification de couverture
+# (ST_CoverageSimplify) charge tout le bloc traité en mémoire (~19 Ko/vertex) :
+# la France entière (2.75M vertices) dépasse la RAM. On découpe donc PAR RÉGION,
+# traitée séquentiellement (pic mémoire = plus grosse région, ~7 Go) : les bords
+# partagés au sein d'une région restent cohérents (Paris + petite couronne étant
+# tous en Île-de-France, leurs slivers inter-départements sont corrigés) ; seules
+# d'éventuelles coutures fines subsistent le long des frontières entre régions.
+_REGIONS = {
+    "11": "75 77 78 91 92 93 94 95",
+    "24": "18 28 36 37 41 45",
+    "27": "21 25 39 58 70 71 89 90",
+    "28": "14 27 50 61 76",
+    "32": "02 59 60 62 80",
+    "44": "08 10 51 52 54 55 57 67 68 88",
+    "52": "44 49 53 72 85",
+    "53": "22 29 35 56",
+    "75": "16 17 19 23 24 33 40 47 64 79 86 87",
+    "76": "09 11 12 30 31 32 34 46 48 65 66 81 82",
+    "84": "01 03 07 15 26 38 42 43 63 69 73 74",
+    "93": "04 05 06 13 83 84",
+    "94": "2A 2B",
+}
+DEPT_REGION = {d: r for r, depts in _REGIONS.items() for d in depts.split()}
 
 
 def _gcs_download(uri: str, dest: Path) -> None:
@@ -61,31 +88,89 @@ def _gcs_download(uri: str, dest: Path) -> None:
 def build_geojson(gold: str, geom: str) -> str:
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial;")
-    dims = ",\n".join(f"'{d}', round(s.{d}, 3)" for d in DIMENSIONS)
-    # Jointure sur code_commune ; les 5 communes scorées sans géométrie sont
-    # écartées par le INNER JOIN. geom simplifiée puis sérialisée en GeoJSON.
+    con.execute("SET preserve_insertion_order = false;")
+    con.execute(f"SET temp_directory = '{Path(tempfile.gettempdir()) / 'duckdb_score_spill'}';")
+    dim_select = ", ".join(f"s.{d}" for d in DIMENSIONS)
+    dim_props = ",\n".join(f"'{d}', round(o.{d}, 3)" for d in DIMENSIONS)
+
+    # Correspondance département -> région, chargée en table pour le rattachement.
+    con.execute("CREATE TEMP TABLE dept_region(dept VARCHAR, region VARCHAR)")
+    con.executemany(
+        "INSERT INTO dept_region VALUES (?, ?)", list(DEPT_REGION.items())
+    )
+
+    # Jointure sur code_commune (les communes scorées sans géométrie sont écartées
+    # par le INNER JOIN) + rattachement région (fallback = département si non mappé,
+    # DOM p.ex.). rn = index GLOBAL stable pour rejoindre les properties à la fin.
+    con.execute(f"""
+        CREATE TEMP TABLE ordered AS
+        SELECT
+            g.geom AS geom,
+            g.code_commune AS code_commune,
+            g.nom_commune AS nom_commune,
+            s.code_departement, s.prix_m2_median, s.nb_transactions,
+            s.dpe_dominant, s.score_valeur, s.gap, s.gap_pondere,
+            {dim_select},
+            coalesce(dr.region, s.code_departement) AS region,
+            row_number() OVER (ORDER BY g.code_commune) AS rn
+        FROM read_parquet('{gold}') s
+        JOIN read_parquet('{geom}') g USING (code_commune)
+        LEFT JOIN dept_region dr ON dr.dept = s.code_departement
+    """)
+
+    # Simplification de COUVERTURE topologique, RÉGION PAR RÉGION (séquentiel pour
+    # borner la mémoire). Au sein d'une région, chaque frontière partagée est réduite
+    # à l'identique des deux côtés -> aucun trou/sliver (contrairement à ST_Simplify
+    # par commune). ST_Dump explose la collection (et les MultiPolygon des îles) ;
+    # path[1] = index LOCAL au chunk -> on rejoint local_rn pour retrouver le rn
+    # global ; ST_Collect réassemble les parts d'une commune (assemblage simple,
+    # là où ST_Union_Agg dissoudrait — trop coûteux).
+    con.execute("CREATE TEMP TABLE simplified(rn BIGINT, geom GEOMETRY)")
+    regions = [r[0] for r in con.execute(
+        "SELECT DISTINCT region FROM ordered ORDER BY region"
+    ).fetchall()]
+    for region in regions:
+        con.execute(f"""
+            INSERT INTO simplified
+            WITH cur AS (
+                SELECT geom, rn AS global_rn,
+                       row_number() OVER (ORDER BY rn) AS local_rn
+                FROM ordered WHERE region = ?
+            ),
+            coverage AS (
+                SELECT ST_CoverageSimplify(array_agg(geom ORDER BY local_rn), {SIMPLIFY_TOL}) AS coll
+                FROM cur
+            ),
+            dumped AS (
+                SELECT d.path[1] AS local_rn, ST_Collect(list(d.geom)) AS geom
+                FROM coverage, UNNEST(ST_Dump(coll)) AS u(d)
+                GROUP BY d.path[1]
+            )
+            SELECT c.global_rn, dp.geom
+            FROM dumped dp JOIN cur c USING (local_rn)
+        """, [region])
+
     sql = f"""
         SELECT json_object(
             'type', 'FeatureCollection',
             'features', coalesce(json_group_array(json_object(
                 'type', 'Feature',
-                'geometry', CAST(ST_AsGeoJSON(ST_Simplify(g.geom, {SIMPLIFY_TOL})) AS JSON),
+                'geometry', CAST(ST_AsGeoJSON(sm.geom) AS JSON),
                 'properties', json_object(
-                    'code_commune', g.code_commune,
-                    'nom', g.nom_commune,
-                    'dep', s.code_departement,
-                    'prix', round(s.prix_m2_median),
-                    'nb_transactions', s.nb_transactions,
-                    'dpe', s.dpe_dominant,
-                    'score_valeur', round(s.score_valeur, 3),
-                    'gap', round(s.gap, 3),
-                    'gap_pondere', round(s.gap_pondere, 3),
-                    {dims}
+                    'code_commune', o.code_commune,
+                    'nom', o.nom_commune,
+                    'dep', o.code_departement,
+                    'prix', round(o.prix_m2_median),
+                    'nb_transactions', o.nb_transactions,
+                    'dpe', o.dpe_dominant,
+                    'score_valeur', round(o.score_valeur, 3),
+                    'gap', round(o.gap, 3),
+                    'gap_pondere', round(o.gap_pondere, 3),
+                    {dim_props}
                 )
             )), json_array())
         )::VARCHAR
-        FROM read_parquet('{gold}') s
-        JOIN read_parquet('{geom}') g USING (code_commune)
+        FROM ordered o JOIN simplified sm USING (rn)
     """
     return con.execute(sql).fetchone()[0]
 
