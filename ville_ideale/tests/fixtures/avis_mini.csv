@@ -1,0 +1,5 @@
+slug,code_commune,nom_ville,date,auteur,note_moyenne,environnement,transports,securite,sante,sports_et_loisirs,culture,enseignement,commerces,qualite_de_vie,points_positifs,points_negatifs
+nice,6088,Nice,15-03-2024,SecretPseudo42,7.50,8,,,,,,,,,"→ Ville très calme et agréable. Les commerces sont nombreux et variés.","Le stationnement est un vrai casse-tête le soir. Beaucoup de bruit en centre-ville."
+paris-1er-arrondissement,75101,Paris 1Er Arrondissement,04-08-2025,ZorroMasque,6.00,6,,,,,,,,,"Transports exceptionnels, RER A et métro partout.","Prix de l'immobilier délirants."
+nice,6088,Nice,20-11-2023,AutreAuteurUnique,4.00,5,,,,,,,,,"Le marché est vivant.","Insécurité et délinquance en hausse. Quartier sale et mal entretenu."
+lyon-1er-arrondissement,69381,Lyon 1Er Arrondissement,,AnonymeSansDate,8.00,,,,,,,,,,"Écoles de qualité et espaces verts nombreux.",""

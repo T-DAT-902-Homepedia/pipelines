@@ -1,9 +1,51 @@
 [project]
 name = "homepedia-ville-ideale"
 version = "0.1.0"
-description = "Ingestion bronze des notes ville-ideale.fr (3095 communes) vers S3"
+description = "Scraping et analyse textuelle (sentiment) des avis ville-ideale.fr"
 requires-python = ">=3.11"
 dependencies = [
     "boto3>=1.43.17",
     "tls-client>=1.0.1",
+    "curl-cffi>=0.7.4",
 ]
+
+[project.optional-dependencies]
+# Analyse textuelle : lourde (torch/transformers/spaCy), tenue hors de l'image
+# duckpipe. Le modèle spaCy est épinglé par wheel pour un install reproductible.
+nlp = [
+    "spacy>=3.8",
+    "fr-core-news-md",
+    "transformers>=4.46",
+    "torch>=2.5",
+    "pyarrow>=18",
+    # Tokenizer SentencePiece de DistilCamemBERT (sinon transformers 5.x tente
+    # un backend tiktoken incompatible et échoue au chargement).
+    "sentencepiece>=0.2",
+]
+# Upload des Parquet silver / copie bronze vers GCS depuis l'étape NLP.
+gcs = [
+    "google-cloud-storage>=2.18",
+]
+# Rotation d'IP gratuite via AWS API Gateway pour le scraping France entière.
+rotate = [
+    "requests-ip-rotator>=1.0.14",
+    "requests>=2.32",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.8",
+]
+
+# torch en version CPU uniquement (l'inférence tourne sur CPU, ~2-5 min sur 612
+# avis) : évite de tirer ~2,5 Go de wheels CUDA en CI. Le modèle spaCy est servi
+# depuis le release GitHub d'Explosion (pas sur PyPI).
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+fr-core-news-md = { url = "https://github.com/explosion/spacy-models/releases/download/fr_core_news_md-3.8.0/fr_core_news_md-3.8.0-py3-none-any.whl" }
