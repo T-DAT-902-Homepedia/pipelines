@@ -86,6 +86,11 @@ SILVER_PATHS = {
     "dpe": "dpe_commune/dpe.parquet",
     "climat": "climat_commune/climat.parquet",
     "proximite_metropole": "proximite_commune/proximite_metropole.parquet",
+    # Avis ville-ideale : produits par l'étape NLP externe (package ville_ideale),
+    # pas par un pipeline duckpipe. Chemins stables (non millésimés).
+    "avis": "avis_clean/avis.parquet",
+    "avis_segments": "avis_nlp/segments.parquet",
+    "avis_tokens": "avis_nlp/tokens.parquet",
 }
 
 SEMICOLON_CSV = {"delim": ";", "ignore_errors": True}
@@ -97,6 +102,10 @@ def gold_score_path(env: Environment, run_date: str) -> str:
 
 def gold_latest_path(env: Environment) -> str:
     return f"{env.gold_root}/score_territoire/latest/score.parquet"
+
+
+def gold_avis_path(env: Environment, run_date: str) -> str:
+    return f"{env.gold_root}/avis_commune/run_date={run_date}/avis_commune.parquet"
 
 
 def dq_report_path(env: Environment, kind: str, run_date: str) -> str:
@@ -214,5 +223,6 @@ def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
 
     # --- Gold ----------------------------------------------------------------
     catalog.add("score_territoire", ParquetDataset(gold_score_path(env, run_date)))
+    catalog.add("avis_commune", ParquetDataset(gold_avis_path(env, run_date)))
 
     return catalog

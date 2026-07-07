@@ -178,6 +178,7 @@ def build_fiches(  # noqa: PLR0913 — une entrée par table silver fusionnée
     risques: str,
     climat: str,
     proximite_metropole: str,
+    avis_commune: str,
 ) -> str:
     """Table `web_fiches` : une ligne = une fiche commune (STRUCT imbriqués,
     sérialisés en JSON par COPY). Base = union des codes des contours et du
@@ -244,7 +245,14 @@ def build_fiches(  # noqa: PLR0913 — une entrée par table silver fusionnée
                 'dist_metropole_km': p.dist_metropole_km,
                 'nom_metropole': p.nom_metropole,
                 'surface_km2': g.surface_km2
-            }} AS indicateurs
+            }} AS indicateurs,
+            CASE WHEN av.code_commune IS NULL THEN NULL ELSE {{
+                'n_avis': av.n_avis,
+                'sentiment_global': round(av.sentiment_global, 2)::DOUBLE,
+                'periode': {{'debut': av.date_min, 'fin': av.date_max}},
+                'low_data': av.low_data,
+                'mini_cloud': av.wordcloud_preview
+            }} END AS avis
         FROM base b
         LEFT JOIN {commune_geom} g USING (code_commune)
         LEFT JOIN {commune_agg} a USING (code_commune)
@@ -263,9 +271,75 @@ def build_fiches(  # noqa: PLR0913 — une entrée par table silver fusionnée
         LEFT JOIN {risques} ri USING (code_commune)
         LEFT JOIN {climat} cl USING (code_commune)
         LEFT JOIN {proximite_metropole} p USING (code_commune)
+        LEFT JOIN {avis_commune} av USING (code_commune)
         """
     )
     return "web_fiches"
+
+
+def create_avis_stub(con: duckdb.DuckDBPyConnection, *, out_table: str = "avis_commune") -> str:
+    """Crée une table ``avis_commune`` vide et typée.
+
+    Permet à ``publish-web`` de tourner quand l'étape NLP n'a jamais été
+    produite : les fiches se construisent avec ``avis: null`` et aucun artefact
+    avis n'est écrit. Le typage doit correspondre à la sortie de
+    ``pipelines/avis.py`` pour que les jointures/COPY aval fonctionnent.
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE {out_table} AS
+        SELECT
+            CAST(NULL AS VARCHAR) AS code_commune,
+            CAST(NULL AS VARCHAR) AS nom_ville,
+            CAST(NULL AS BIGINT) AS n_avis,
+            CAST(NULL AS DATE) AS date_min,
+            CAST(NULL AS DATE) AS date_max,
+            CAST(NULL AS DOUBLE) AS sentiment_global,
+            CAST(NULL AS BOOLEAN) AS low_data,
+            CAST(NULL AS STRUCT(theme VARCHAR, n_segments BIGINT, pct_positive DOUBLE,
+                                pct_negative DOUBLE, score DOUBLE)[]) AS themes,
+            CAST(NULL AS STRUCT(word VARCHAR, weight BIGINT, sentiment VARCHAR,
+                                themes VARCHAR[])[]) AS wordcloud,
+            CAST(NULL AS STRUCT(word VARCHAR, weight BIGINT, sentiment VARCHAR)[])
+                AS wordcloud_preview,
+            CAST(NULL AS STRUCT("text" VARCHAR, "label" VARCHAR, theme VARCHAR,
+                                mois VARCHAR, "source" VARCHAR)[]) AS verbatims
+        WHERE false
+        """
+    )
+    return out_table
+
+
+def build_avis(
+    con: duckdb.DuckDBPyConnection,
+    avis_commune: str,
+    *,
+    out_table: str = "web_avis",
+) -> str:
+    """Table ``web_avis`` : une ligne par commune ayant des avis, prête pour le
+    JSON par département. Le sentiment par thème est masqué (NULL) pour les
+    communes ``low_data`` (< 10 avis) — non fiable statistiquement (maquette) ;
+    le gold conserve la donnée complète pour l'analyse.
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE {out_table} AS
+        SELECT
+            code_commune,
+            {DEPT_EXPR} AS code_departement,
+            nom_ville,
+            n_avis,
+            {{'debut': date_min, 'fin': date_max}} AS periode,
+            round(sentiment_global, 2)::DOUBLE AS sentiment_global,
+            low_data,
+            CASE WHEN low_data THEN NULL ELSE themes END AS themes,
+            wordcloud,
+            verbatims,
+            'Ville-idéale' AS source
+        FROM {avis_commune}
+        """
+    )
+    return out_table
 
 
 def build_search_index(

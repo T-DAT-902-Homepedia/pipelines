@@ -1,0 +1,106 @@
+name: Scrape ville-ideale (matrix)
+
+# Scraping distribué des avis : chaque job runner GitHub a une IP Azure
+# différente -> pool d'IP gratuit pour tenir le débit sur toute la France sans
+# se faire bloquer (cf. plan avis-sentiment, option de rotation d'IP n°3).
+# curl_cffi reproduit l'empreinte Chrome (JA4H). Manuel uniquement : le scraping
+# est une opération ponctuelle, pas une étape du run annuel.
+#
+# Chaque shard scrape une tranche [start, end) de communes/data/communes.csv et
+# publie son CSV partiel en artefact ; un job final les concatène.
+
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: "Nombre de shards (jobs parallèles)"
+        default: "20"
+      total_communes:
+        description: "Nombre de communes à couvrir depuis communes.csv"
+        default: "35000"
+
+permissions:
+  contents: read
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    defaults:
+      run:
+        working-directory: ville_ideale
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: ville_ideale/uv.lock
+
+      - name: Install scraping deps
+        run: uv sync
+
+      - name: Compute shard bounds and scrape
+        env:
+          TOTAL: ${{ github.event.inputs.total_communes }}
+          SHARDS: ${{ github.event.inputs.shards }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          per=$(( (TOTAL + SHARDS - 1) / SHARDS ))
+          start=$(( SHARD * per ))
+          end=$(( start + per ))
+          echo "Shard $SHARD : communes [$start, $end)"
+          uv run python scripts/scrape_ville_ideale.py \
+            --communes data/notes_par_commune.csv \
+            --output "data/avis_shard_${SHARD}.csv" \
+            --start "$start" --end "$end"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avis-shard-${{ matrix.shard }}
+          path: ville_ideale/data/avis_shard_${{ matrix.shard }}.csv
+          if-no-files-found: ignore
+
+  merge:
+    needs: scrape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: avis-shard-*
+          path: shards
+          merge-multiple: true
+
+      - name: Concaténer les shards en avis_france.csv
+        run: |
+          python - <<'PY'
+          import csv, glob, pathlib
+          out = pathlib.Path("ville_ideale/data/avis_france.csv")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          files = sorted(glob.glob("shards/*.csv"))
+          header, rows = None, []
+          for f in files:
+              with open(f, encoding="utf-8") as fh:
+                  r = csv.reader(fh)
+                  h = next(r, None)
+                  if h is None:
+                      continue
+                  header = header or h
+                  rows.extend(row for row in r)
+          if header:
+              with out.open("w", newline="", encoding="utf-8") as fh:
+                  w = csv.writer(fh)
+                  w.writerow(header)
+                  w.writerows(rows)
+          print(f"{len(rows)} avis fusionnés depuis {len(files)} shards -> {out}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avis-france
+          path: ville_ideale/data/avis_france.csv
