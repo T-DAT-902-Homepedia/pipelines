@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from duckpipe.node import Node, Pipeline
+from duckpipe.pipelines.codes import dept_code_expr
 
 if TYPE_CHECKING:
     import duckdb
@@ -48,7 +49,7 @@ def geometries(con: duckdb.DuckDBPyConnection, communes_raw: str, depts_raw: str
     con.execute(
         f"""
         CREATE OR REPLACE TABLE dept_geom AS
-        SELECT lpad(CAST(code AS VARCHAR), 2, '0') AS code_departement,
+        SELECT {dept_code_expr("code")} AS code_departement,
                nom AS nom_departement, geom
         FROM {depts_raw}
         """
@@ -88,20 +89,20 @@ def geometries_web(  # noqa: PLR0913 — une entrée par variante + les référe
     con.execute(
         f"""
         CREATE OR REPLACE TABLE dept_geom_100m AS
-        SELECT lpad(CAST(code AS VARCHAR), 2, '0') AS code_departement,
+        SELECT {dept_code_expr("code")} AS code_departement,
                nom AS nom_departement, geom
         FROM {depts_100m_raw}
-        WHERE lpad(CAST(code AS VARCHAR), 2, '0')
+        WHERE {dept_code_expr("code")}
               IN (SELECT code_departement FROM {dept_geom})
         """
     )
     con.execute(
         f"""
         CREATE OR REPLACE TABLE dept_geom_1000m AS
-        SELECT lpad(CAST(code AS VARCHAR), 2, '0') AS code_departement,
+        SELECT {dept_code_expr("code")} AS code_departement,
                nom AS nom_departement, geom
         FROM {depts_1000m_raw}
-        WHERE lpad(CAST(code AS VARCHAR), 2, '0')
+        WHERE {dept_code_expr("code")}
               IN (SELECT code_departement FROM {dept_geom})
         """
     )
@@ -111,7 +112,7 @@ def geometries_web(  # noqa: PLR0913 — une entrée par variante + les référe
     con.execute(
         f"""
         CREATE OR REPLACE TABLE region_geom_1000m AS
-        SELECT lpad(CAST(code AS VARCHAR), 2, '0') AS code_region,
+        SELECT {dept_code_expr("code")} AS code_region,
                nom AS nom_region, geom
         FROM {regions_1000m_raw}
         """

@@ -9,6 +9,7 @@ import pytest
 
 from duckpipe import export_web
 from duckpipe.connection import get_connection
+from duckpipe.pipelines.codes import dept_code_expr
 
 
 @pytest.fixture
@@ -476,3 +477,17 @@ def test_prix_series_weighted_median_and_nulls(full_con) -> None:
     assert payload["communes"]["01001"] == [1800, 2000]
     # Beta : sous le seuil en 2021, 3 ventes < 5 en 2024 -> null partout.
     assert payload["communes"].get("01002", [None, None]) == [None, None]
+
+
+def test_dept_code_expr_pads_without_truncating(con) -> None:
+    rows = con.execute(
+        f"SELECT code, {dept_code_expr('code')} FROM (VALUES "
+        "('1'), ('01'), ('2A'), ('971'), (' 974 ')) AS v(code)"
+    ).fetchall()
+    assert dict(rows) == {
+        "1": "01",
+        "01": "01",
+        "2A": "2A",
+        "971": "971",  # lpad natif tronquerait en '97'
+        " 974 ": "974",
+    }

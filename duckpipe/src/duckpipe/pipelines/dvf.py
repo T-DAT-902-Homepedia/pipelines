@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from duckpipe.node import Node, Pipeline
+from duckpipe.pipelines.codes import dept_code_expr
 
 if TYPE_CHECKING:
     import duckdb
@@ -40,7 +41,7 @@ def ingest_dvf(con: duckdb.DuckDBPyConnection, dvf_raw: str) -> str:
             TRY_CAST(surface_reelle_bati AS DOUBLE) AS surface_bati,
             lpad(CAST(code_commune AS VARCHAR), 5, '0') AS code_commune,
             nom_commune,
-            lpad(CAST(code_departement AS VARCHAR), 2, '0') AS code_departement,
+            {dept_code_expr("code_departement")} AS code_departement,
             TRY_CAST(longitude AS DOUBLE) AS longitude,
             TRY_CAST(latitude AS DOUBLE) AS latitude
         FROM {dvf_raw}
