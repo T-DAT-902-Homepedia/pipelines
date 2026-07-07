@@ -27,6 +27,69 @@ DEPT_EXPR = (
 # l'ADR-0008), et une simplification par feature créerait des interstices
 # entre polygones voisins.
 
+# Rattachement département -> région (découpage administratif 2016, stable
+# depuis) : référentiel court et figé, embarqué plutôt qu'ingéré (une source
+# de plus pour 101 lignes n'apporterait que de la fragilité réseau).
+DEPT_TO_REGION: dict[str, tuple[str, str]] = {
+    **dict.fromkeys(
+        ["01", "03", "07", "15", "26", "38", "42", "43", "63", "69", "73", "74"],
+        ("84", "Auvergne-Rhône-Alpes"),
+    ),
+    **dict.fromkeys(
+        ["21", "25", "39", "58", "70", "71", "89", "90"],
+        ("27", "Bourgogne-Franche-Comté"),
+    ),
+    **dict.fromkeys(["22", "29", "35", "56"], ("53", "Bretagne")),
+    **dict.fromkeys(
+        ["18", "28", "36", "37", "41", "45"], ("24", "Centre-Val de Loire")
+    ),
+    **dict.fromkeys(["2A", "2B"], ("94", "Corse")),
+    **dict.fromkeys(
+        ["08", "10", "51", "52", "54", "55", "57", "67", "68", "88"],
+        ("44", "Grand Est"),
+    ),
+    **dict.fromkeys(["02", "59", "60", "62", "80"], ("32", "Hauts-de-France")),
+    **dict.fromkeys(
+        ["75", "77", "78", "91", "92", "93", "94", "95"], ("11", "Île-de-France")
+    ),
+    **dict.fromkeys(["14", "27", "50", "61", "76"], ("28", "Normandie")),
+    **dict.fromkeys(
+        ["16", "17", "19", "23", "24", "33", "40", "47", "64", "79", "86", "87"],
+        ("75", "Nouvelle-Aquitaine"),
+    ),
+    **dict.fromkeys(
+        ["09", "11", "12", "30", "31", "32", "34", "46", "48", "65", "66", "81", "82"],
+        ("76", "Occitanie"),
+    ),
+    **dict.fromkeys(["44", "49", "53", "72", "85"], ("52", "Pays de la Loire")),
+    **dict.fromkeys(
+        ["04", "05", "06", "13", "83", "84"], ("93", "Provence-Alpes-Côte d'Azur")
+    ),
+    "971": ("01", "Guadeloupe"),
+    "972": ("02", "Martinique"),
+    "973": ("03", "Guyane"),
+    "974": ("04", "La Réunion"),
+    "976": ("06", "Mayotte"),
+}
+
+
+def ensure_region_mapping(con: duckdb.DuckDBPyConnection) -> str:
+    """Matérialise la table `region_mapping` (code_departement, code_region,
+    nom_region) depuis le référentiel embarqué. Idempotent."""
+    values = ", ".join(
+        f"('{dept}', '{code}', '{nom.replace(chr(39), chr(39) * 2)}')"
+        for dept, (code, nom) in sorted(DEPT_TO_REGION.items())
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE region_mapping AS
+        SELECT * FROM (VALUES {values})
+            AS v(code_departement, code_region, nom_region)
+        """
+    )
+    return "region_mapping"
+
+
 # Dimensions normalisées du score gold, exposées telles quelles dans les
 # properties de la choroplèthe communale et les composantes des fiches.
 SCORE_DIMENSIONS = [
@@ -104,13 +167,18 @@ def build_choropleth_departements(
     """Table choroplèthe départementale : même forme que les communes
     (sans score, calculé au grain communal uniquement). `dept_geom` désigne
     la variante de géométrie voulue (1000m pour le LOD low, 100m pour le mid).
+    `code_region`/`nom_region` (additifs) permettent le drill-down régions ->
+    départements côté client sans table de correspondance embarquée au front.
     """
+    ensure_region_mapping(con)
     con.execute(
         f"""
         CREATE OR REPLACE TABLE {out_table} AS
         SELECT
             g.code_departement,
             g.nom_departement AS nom,
+            rm.code_region,
+            rm.nom_region,
             t.prix_m2_median,
             coalesce(t.nb_transactions, 0) AS nb_transactions,
             coalesce(t.fiable, false) AS fiable,
@@ -128,6 +196,82 @@ def build_choropleth_departements(
             ON m.code_departement = g.code_departement AND m.type_local = 'Maison'
         LEFT JOIN {dept_agg} ap
             ON ap.code_departement = g.code_departement AND ap.type_local = 'Appartement'
+        LEFT JOIN region_mapping rm ON rm.code_departement = g.code_departement
+        """
+    )
+    return out_table
+
+
+def build_choropleth_regions(
+    con: duckdb.DuckDBPyConnection,
+    region_geom: str,
+    dvf: str,
+    score_territoire: str,
+    *,
+    out_table: str = "web_choropleth_regions",
+) -> str:
+    """Table choroplèthe régionale : médianes recalculées depuis les
+    TRANSACTIONS du millésime courant (une médiane de médianes communales
+    serait biaisée par les petites communes), + agrégats du score au grain
+    communal (médianes des communes scorées de la région).
+    """
+    ensure_region_mapping(con)
+    # Grain transaction -> région : GROUPING SETS comme dept_agg (type_local
+    # NULL = tous types), pivoté ensuite en colonnes plates tous/maison/appart.
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE region_agg AS
+        SELECT
+            rm.code_region,
+            d.type_local,
+            count(*) AS nb_transactions,
+            median(d.prix_m2) AS prix_m2_median,
+            count(*) >= 5 AS fiable
+        FROM {dvf} d
+        JOIN region_mapping rm USING (code_departement)
+        GROUP BY GROUPING SETS ((rm.code_region), (rm.code_region, d.type_local))
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE region_score AS
+        SELECT
+            rm.code_region,
+            count(*) AS nb_communes_scorees,
+            round(median(s.score_valeur), 3) AS score_median,
+            round(median(s.gap_pondere), 3) AS gap_pondere_median
+        FROM {score_territoire} s
+        JOIN region_mapping rm USING (code_departement)
+        GROUP BY rm.code_region
+        """
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE {out_table} AS
+        SELECT
+            g.code_region,
+            g.nom_region AS nom,
+            t.prix_m2_median,
+            coalesce(t.nb_transactions, 0) AS nb_transactions,
+            coalesce(t.fiable, false) AS fiable,
+            m.prix_m2_median AS maison_prix_m2_median,
+            coalesce(m.nb_transactions, 0) AS maison_nb_transactions,
+            coalesce(m.fiable, false) AS maison_fiable,
+            ap.prix_m2_median AS appart_prix_m2_median,
+            coalesce(ap.nb_transactions, 0) AS appart_nb_transactions,
+            coalesce(ap.fiable, false) AS appart_fiable,
+            sc.score_median,
+            sc.gap_pondere_median,
+            coalesce(sc.nb_communes_scorees, 0) AS nb_communes_scorees,
+            g.geom
+        FROM {region_geom} g
+        LEFT JOIN region_agg t
+            ON t.code_region = g.code_region AND t.type_local IS NULL
+        LEFT JOIN region_agg m
+            ON m.code_region = g.code_region AND m.type_local = 'Maison'
+        LEFT JOIN region_agg ap
+            ON ap.code_region = g.code_region AND ap.type_local = 'Appartement'
+        LEFT JOIN region_score sc ON sc.code_region = g.code_region
         """
     )
     return out_table
@@ -397,6 +541,179 @@ def build_classement(
         """
     )
     return "web_classement"
+
+
+def build_points_sample(
+    con: duckdb.DuckDBPyConnection,
+    dvf: str,
+    *,
+    n: int = 100_000,
+    out_table: str = "web_points_sample",
+) -> str:
+    """Table `web_points_sample` : échantillon de mutations géolocalisées pour
+    la heatmap/isolignes de la carte. Reservoir sampling REPEATABLE : tirage
+    reproductible d'un run à l'autre à données constantes (ADR-0007, threads=1).
+    Coordonnées arrondies à 4 décimales (~11 m), type compacté M/A.
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE {out_table} AS
+        SELECT
+            CAST(round(longitude, 4) AS DOUBLE) AS lon,
+            CAST(round(latitude, 4) AS DOUBLE) AS lat,
+            CAST(round(prix_m2) AS INTEGER) AS prix,
+            CASE type_local WHEN 'Maison' THEN 'M' ELSE 'A' END AS t
+        FROM {dvf}
+        USING SAMPLE reservoir({n} ROWS) REPEATABLE (42)
+        """
+    )
+    return out_table
+
+
+# --- Payloads charts/ (enveloppes JSON, pas des tables geo) -------------------
+# Portés de webapp_export/export_charts.py (branche feat/webapp-export) pour que
+# chaque run publié embarque ses artefacts charts : contrats identiques à ceux
+# consommés par webapp/src/lib/charts.ts (schema_version 1 par artefact).
+
+
+def build_stats_communes(  # noqa: PLR0913 — une entrée par table silver jointe
+    con: duckdb.DuckDBPyConnection,
+    score_territoire: str,
+    revenus: str,
+    emploi: str,
+    climat: str,
+    tourisme: str,
+    proximite_metropole: str,
+    commune_transport: str,
+    *,
+    year: int,
+) -> dict:
+    """Payload `charts/stats_communes.json` : valeurs brutes par commune scorée
+    (périmètre gold), jointures silver par code_commune."""
+    rows = con.execute(
+        f"""
+        SELECT
+            s.code_commune,
+            s.nom_commune                          AS nom,
+            s.code_departement                     AS dep,
+            round(s.prix_m2_median)                AS prix_m2_median,
+            s.nb_transactions,
+            round(e.taux_chomage, 2)               AS taux_chomage,
+            round(e.taux_couverture_emploi, 2)     AS taux_couverture_emploi,
+            round(r.revenu_median)                 AS revenu_median,
+            round(c.ensoleillement_h_an)           AS ensoleillement_h_an,
+            round(c.jours_ensoleilles)             AS jours_ensoleilles,
+            round(c.temperature_moy_annuelle, 1)   AS temperature_moy_annuelle,
+            round(t.part_residences_secondaires, 4) AS part_residences_secondaires,
+            round(p.dist_metropole_km, 1)          AS dist_metropole_km,
+            tr.nb_arrets,
+            round(tr.densite_arrets_km2, 2)        AS densite_arrets_km2
+        FROM {score_territoire} s
+        LEFT JOIN {emploi} e USING (code_commune)
+        LEFT JOIN {revenus} r USING (code_commune)
+        LEFT JOIN {climat} c USING (code_commune)
+        LEFT JOIN {tourisme} t USING (code_commune)
+        LEFT JOIN {proximite_metropole} p USING (code_commune)
+        LEFT JOIN {commune_transport} tr USING (code_commune)
+        ORDER BY s.code_commune
+        """
+    ).fetchall()
+    cols = [d[0] for d in con.description]
+    return {
+        "schema_version": 1,
+        "year": year,
+        "communes": [dict(zip(cols, row, strict=True)) for row in rows],
+    }
+
+
+def build_prix_distribution(
+    con: duckdb.DuckDBPyConnection, dvf: str, *, year: int, bins: int = 60
+) -> dict:
+    """Payload `charts/prix_distribution.json` : histogrammes du prix au m²
+    (tous/maison/appartement) sur bins uniformes de 0 au p99 global — le
+    silver est déjà clippé p1-p99 par département×type, la borne rend juste
+    l'axe lisible."""
+    p99 = con.execute(
+        f"SELECT quantile_cont(prix_m2, 0.99) FROM {dvf}"
+    ).fetchone()[0]
+    hi = float(round(p99, -2))  # arrondi à la centaine : bords de bins propres
+    width = hi / bins
+
+    def counts(where: str) -> list[int]:
+        rows = con.execute(
+            f"""
+            SELECT least(floor(prix_m2 / {width}), {bins - 1})::INT AS b, count(*)
+            FROM {dvf}
+            WHERE prix_m2 <= {hi} {where}
+            GROUP BY b ORDER BY b
+            """
+        ).fetchall()
+        out = [0] * bins
+        for b, nb in rows:
+            out[b] = nb
+        return out
+
+    return {
+        "schema_version": 1,
+        "year": year,
+        "bin_edges": [round(i * width) for i in range(bins + 1)],
+        "series": {
+            "tous": counts(""),
+            "maison": counts("AND type_local = 'Maison'"),
+            "appartement": counts("AND type_local = 'Appartement'"),
+        },
+    }
+
+
+def build_prix_series(
+    con: duckdb.DuckDBPyConnection,
+    commune_agg: str,
+    year: int,
+    millesime_tables: dict[int, str],
+    *,
+    min_transactions: int = 5,
+) -> dict:
+    """Payload `charts/prix_series.json` : médianes annuelles par commune
+    (null si < min_transactions ventes) + série nationale de référence.
+
+    La médiane nationale est la médiane pondérée (par nb de ventes) des
+    médianes communales : les millésimes annexes ne conservent que l'agrégat
+    communal (silver commune_prix), pas les transactions. Méthode identique
+    sur toutes les années — année courante comprise — pour une série homogène.
+    """
+    year_tables = dict(sorted({**millesime_tables, year: commune_agg}.items()))
+    years = list(year_tables)
+
+    national: list[float | None] = []
+    communes: dict[str, list[float | None]] = {}
+    for i, (annee, table) in enumerate(year_tables.items()):
+        med = con.execute(
+            f"""
+            WITH cum AS (
+                SELECT prix_m2_median AS v,
+                       sum(nb_transactions) OVER (ORDER BY prix_m2_median) AS cw,
+                       sum(nb_transactions) OVER () AS tw
+                FROM {table}
+            )
+            SELECT round(min(v)) FROM cum WHERE cw >= tw / 2
+            """
+        ).fetchone()[0]
+        national.append(med)
+        rows = con.execute(
+            f"""
+            SELECT code_commune, round(prix_m2_median)
+            FROM {table} WHERE nb_transactions >= {min_transactions}
+            """
+        ).fetchall()
+        for code, value in rows:
+            communes.setdefault(code, [None] * len(years))[i] = value
+
+    return {
+        "schema_version": 1,
+        "years": years,
+        "national": national,
+        "communes": communes,
+    }
 
 
 def build_score_geojson_compat(

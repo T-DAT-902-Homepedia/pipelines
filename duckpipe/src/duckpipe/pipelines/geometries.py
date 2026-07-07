@@ -61,6 +61,7 @@ def geometries_web(  # noqa: PLR0913 — une entrée par variante + les référe
     communes_1000m_raw: str,
     depts_100m_raw: str,
     depts_1000m_raw: str,
+    regions_1000m_raw: str,
     commune_geom: str,
     dept_geom: str,
 ) -> dict[str, str]:
@@ -104,10 +105,22 @@ def geometries_web(  # noqa: PLR0913 — une entrée par variante + les référe
               IN (SELECT code_departement FROM {dept_geom})
         """
     )
+    # Régions : 18 contours (13 métropole + Corse incluse + 5 DROM), pas de
+    # filtrage sur le référentiel communal (les régions Etalab ne couvrent pas
+    # les collectivités du Pacifique, contrairement aux fichiers communaux).
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE region_geom_1000m AS
+        SELECT lpad(CAST(code AS VARCHAR), 2, '0') AS code_region,
+               nom AS nom_region, geom
+        FROM {regions_1000m_raw}
+        """
+    )
     return {
         "commune_geom_1000m": "commune_geom_1000m",
         "dept_geom_100m": "dept_geom_100m",
         "dept_geom_1000m": "dept_geom_1000m",
+        "region_geom_1000m": "region_geom_1000m",
     }
 
 
@@ -132,10 +145,16 @@ geometries_web_pipeline = Pipeline(
                 "communes_1000m_raw",
                 "depts_100m_raw",
                 "depts_1000m_raw",
+                "regions_1000m_raw",
                 "commune_geom",
                 "dept_geom",
             ],
-            outputs=["commune_geom_1000m", "dept_geom_100m", "dept_geom_1000m"],
+            outputs=[
+                "commune_geom_1000m",
+                "dept_geom_100m",
+                "dept_geom_1000m",
+                "region_geom_1000m",
+            ],
             name="geometries_web",
         ),
     ]

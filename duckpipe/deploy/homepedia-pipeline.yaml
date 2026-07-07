@@ -49,6 +49,10 @@ main:
               - "dvf"
               - "geometries_communes"
               - "geometries_departements"
+              - "geometries_communes_1000m"
+              - "geometries_departements_100m"
+              - "geometries_departements_1000m"
+              - "geometries_regions_1000m"
               - "transport"
               - "revenus"
               - "risques"
@@ -100,6 +104,26 @@ main:
                   args:
                     job_name: ${job_name}
                     cli_args: ${["run", pipeline, "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
+    # Millésimes DVF annexes (évolution des fiches + charts/prix_series) :
+    # ingest du CSV geo-dvf de l'année puis agrégat communal commune_prix.
+    # Doit rester aligné sur catalogs.WEB_MILLESIMES.
+    - millesimes:
+        parallel:
+          for:
+            value: millesime
+            in: [2021, 2022, 2023, 2025]
+            steps:
+              - ingest_millesime:
+                  call: run_duckpipe
+                  args:
+                    job_name: ${job_name}
+                    cli_args: ${["ingest", "dvf", "--env", "prod", "--year", string(millesime)]}
+              - prix_millesime:
+                  call: run_duckpipe
+                  args:
+                    job_name: ${job_name}
+                    cli_args: ${["run", "prix_millesime", "--env", "prod", "--year", string(millesime)]}
 
     - validate_silver:
         call: run_duckpipe

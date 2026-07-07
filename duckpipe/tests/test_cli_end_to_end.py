@@ -47,6 +47,7 @@ BRONZE_LAYOUT = {
     "communes-1000m.geojson": "geom/communes-1000m.geojson",
     "departements-100m.geojson": "geom/departements-100m.geojson",
     "departements-1000m.geojson": "geom/departements-1000m.geojson",
+    "regions-1000m.geojson": "geom/regions-1000m.geojson",
     "arrets_transport.csv": "transport/arrets_transport.csv",
     "revenus_commune_filosofi_2021.csv": "revenus/revenus_commune_filosofi_2021.csv",
     "catnat_gaspar.csv": "risques/catnat_gaspar.csv",
