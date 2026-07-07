@@ -272,6 +272,9 @@ def build_choropleth_regions(
         LEFT JOIN region_agg ap
             ON ap.code_region = g.code_region AND ap.type_local = 'Appartement'
         LEFT JOIN region_score sc ON sc.code_region = g.code_region
+        -- Le fichier Etalab contient aussi les COM (Polynésie, TAAF…) : on ne
+        -- sert que les 18 régions du référentiel, les autres n'ont aucune donnée.
+        WHERE g.code_region IN (SELECT DISTINCT code_region FROM region_mapping)
         """
     )
     return out_table
