@@ -63,8 +63,11 @@ def _copy_json(con: duckdb.DuckDBPyConnection, query: str, dest: Path) -> None:
     con.execute(f"COPY ({query}) TO '{dest}' (FORMAT JSON, ARRAY true)")
 
 
-def _load_tables(con: duckdb.DuckDBPyConnection, catalog, year: int) -> dict[int, str]:
-    """Charge toutes les tables nécessaires ; renvoie les millésimes disponibles."""
+def _load_tables(
+    con: duckdb.DuckDBPyConnection, catalog, year: int
+) -> tuple[dict[int, str], bool]:
+    """Charge toutes les tables nécessaires ; renvoie (millésimes disponibles,
+    présence des géométries régionales)."""
     for table in [
         "commune_geom",
         "commune_geom_1000m",
@@ -74,9 +77,19 @@ def _load_tables(con: duckdb.DuckDBPyConnection, catalog, year: int) -> dict[int
         "commune_agg_type",
         "dept_agg",
         "score_territoire",
+        "dvf",
         *FICHE_TABLES,
     ]:
         catalog.load(con, table)
+
+    # Régions : silver apparu après les premiers runs — toléré absent (les
+    # artefacts régionaux sont alors simplement omis du run publié).
+    has_regions = True
+    try:
+        catalog.load(con, "region_geom_1000m")
+    except DatasetError:
+        logger.warning("[warn] region_geom_1000m absent, export web sans maille régionale")
+        has_regions = False
 
     millesimes: dict[int, str] = {}
     for annee in catalogs.WEB_MILLESIMES:
@@ -88,11 +101,32 @@ def _load_tables(con: duckdb.DuckDBPyConnection, catalog, year: int) -> dict[int
             millesimes[annee] = table
         except DatasetError:
             logger.warning("[warn] millésime %s absent, évolution sans cette année", annee)
-    return millesimes
+
+    # Avis : optionnels (étape NLP externe, couverture partielle). Si absents,
+    # on matérialise une table vide typée pour que fiches/exports se construisent
+    # quand même (fiche.avis = null, aucun artefact avis écrit).
+    try:
+        catalog.load(con, "avis_commune")
+    except DatasetError:
+        logger.warning("[warn] avis_commune absent, export web sans analyse d'avis")
+        export_web.create_avis_stub(con)
+
+    return millesimes, has_regions
+
+
+def _write_payload(payload: dict, dest: Path) -> None:
+    """Écrit un payload charts/ (enveloppe JSON, pas une table COPY)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def _generate_artifacts(
-    con: duckdb.DuckDBPyConnection, staging: Path, year: int, millesimes: dict[int, str]
+    con: duckdb.DuckDBPyConnection,
+    staging: Path,
+    year: int,
+    millesimes: dict[int, str],
+    *,
+    has_regions: bool,
 ) -> None:
     """Matérialise les tables web et écrit tous les fichiers sous `staging`.
 
@@ -100,12 +134,32 @@ def _generate_artifacts(
     (variantes 1000m/100m/50m chargées en silver), pas par une simplification
     calculée (cf. note dans export_web.py).
     """
+    if has_regions:
+        export_web.build_choropleth_regions(
+            con, "region_geom_1000m", "dvf", "score_territoire"
+        )
+        _copy_geojson(
+            con,
+            "SELECT * FROM web_choropleth_regions",
+            staging / "choropleth" / "regions-low.geojson",
+            precision=PRECISION_LOW,
+        )
+        _copy_json(
+            con,
+            "SELECT * EXCLUDE (geom) FROM web_choropleth_regions ORDER BY code_region",
+            staging / "stats" / "regions.json",
+        )
+
     for lod, geom_table, precision in [
         ("low", "dept_geom_1000m", PRECISION_LOW),
         ("mid", "dept_geom_100m", PRECISION_MID),
     ]:
         table = export_web.build_choropleth_departements(
-            con, geom_table, "dept_agg", out_table=f"web_choropleth_departements_{lod}"
+            con,
+            geom_table,
+            "dept_agg",
+            "score_territoire",
+            out_table=f"web_choropleth_departements_{lod}",
         )
         _copy_geojson(
             con,
@@ -160,12 +214,37 @@ def _generate_artifacts(
         "score_territoire",
         "web_evolution",
         *FICHE_TABLES,
+        "avis_commune",
     )
     for dept in departements:
         _copy_json(
             con,
             f"SELECT * FROM web_fiches WHERE code_departement = '{dept}' ORDER BY code_commune",
             staging / "communes" / f"{dept}.json",
+        )
+
+    # Analyse d'avis : un fichier par département présent (aligné sur communes/).
+    # Vide (stub) → aucun fichier, la webapp feature-gate via meta.schema_version.
+    export_web.build_avis(con, "avis_commune")
+    avis_departements = [
+        row[0]
+        for row in con.execute(
+            "SELECT DISTINCT code_departement FROM web_avis "
+            "WHERE code_departement IS NOT NULL ORDER BY 1"
+        ).fetchall()
+    ]
+    for dept in avis_departements:
+        _copy_json(
+            con,
+            f"SELECT * FROM web_avis WHERE code_departement = '{dept}' ORDER BY code_commune",
+            staging / "avis" / f"{dept}.json",
+        )
+    if avis_departements:
+        export_web.build_avis_index(con, "web_avis", "commune_geom")
+        _copy_json(
+            con,
+            "SELECT * FROM web_avis_index",
+            staging / "avis" / "index.json",
         )
 
     export_web.build_search_index(con, "commune_geom", "commune_agg", "score_territoire")
@@ -178,8 +257,45 @@ def _generate_artifacts(
         staging / "classements" / "gap-pondere.json",
     )
 
+    # Échantillon de mutations pour la heatmap (chargé lazy côté front).
+    export_web.build_points_sample(con, "dvf")
+    _copy_json(
+        con,
+        "SELECT * FROM web_points_sample",
+        staging / "points" / "transactions-sample.json",
+    )
+
+    # Artefacts charts/ (contrats de webapp/src/lib/charts.ts).
+    _write_payload(
+        export_web.build_stats_communes(
+            con,
+            "score_territoire",
+            "revenus",
+            "emploi",
+            "climat",
+            "tourisme",
+            "proximite_metropole",
+            "commune_transport",
+            year=year,
+        ),
+        staging / "charts" / "stats_communes.json",
+    )
+    _write_payload(
+        export_web.build_prix_distribution(con, "dvf", year=year),
+        staging / "charts" / "prix_distribution.json",
+    )
+    _write_payload(
+        export_web.build_prix_series(con, "commune_agg", year, millesimes),
+        staging / "charts" / "prix_series.json",
+    )
+
 
 def _build_meta(con: duckdb.DuckDBPyConnection, year: int, run_date: str) -> dict:
+    # schema_version reste à 1 : tous les ajouts (avis, régions, charts,
+    # points) sont ADDITIFS — le front déployé valide `z.literal(1)` et
+    # casserait sur un bump. La webapp feature-gate l'analyse d'avis sur
+    # `nb_communes_avis` (0 ou champ absent = section masquée) ; réserver
+    # l'incrément aux changements de contrat non rétrocompatibles.
     return {
         "schema_version": 1,
         "run_date": run_date,
@@ -189,6 +305,7 @@ def _build_meta(con: duckdb.DuckDBPyConnection, year: int, run_date: str) -> dic
         "nb_communes_scorees": con.execute(
             "SELECT count(*) FROM web_fiches WHERE score IS NOT NULL"
         ).fetchone()[0],
+        "nb_communes_avis": con.execute("SELECT count(*) FROM web_avis").fetchone()[0],
         "generated_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
     }
 
@@ -222,14 +339,21 @@ def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str
     gzippé vers le bucket public, meta.json en dernier.
     """
     catalog = catalogs.build_catalog(env, year=year, run_date=run_date)
-    millesimes = _load_tables(con, catalog, year)
+    millesimes, has_regions = _load_tables(con, catalog, year)
 
     run_root = catalogs.web_run_root(env, run_date)
     is_remote = fetch.is_gcs_uri(run_root)
 
     if not is_remote:
         staging = Path(run_root)
-        _generate_artifacts(con, staging, year, millesimes)
+        _generate_artifacts(con, staging, year, millesimes, has_regions=has_regions)
+        export_web.build_score_geojson_compat(con, "web_choropleth_communes_mid")
+        _copy_geojson(
+            con,
+            "SELECT * FROM web_score_compat",
+            Path(catalogs.web_root(env)) / "score.geojson",
+            precision=PRECISION_MID,
+        )
         meta = _build_meta(con, year, run_date)
         meta_path = Path(catalogs.web_root(env)) / "meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,7 +363,7 @@ def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str
 
     with tempfile.TemporaryDirectory() as tmpdir:
         staging = Path(tmpdir)
-        _generate_artifacts(con, staging, year, millesimes)
+        _generate_artifacts(con, staging, year, millesimes, has_regions=has_regions)
         meta = _build_meta(con, year, run_date)
 
         files = sorted(path for path in staging.rglob("*") if path.is_file())
@@ -256,6 +380,18 @@ def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str
             ]
             for future in futures:
                 future.result()
+
+        # score.geojson de compatibilité (déprécié, cf. ADR-0014) : muté en
+        # place à la racine v1/, hors du run immuable (écrit dans staging
+        # APRÈS la collecte rglob), cache court comme meta.json.
+        export_web.build_score_geojson_compat(con, "web_choropleth_communes_mid")
+        compat_local = staging / "score.geojson"
+        _copy_geojson(
+            con, "SELECT * FROM web_score_compat", compat_local, precision=PRECISION_MID
+        )
+        _upload_asset(
+            compat_local, f"{catalogs.web_root(env)}/score.geojson", cache_control=CACHE_META
+        )
 
         # meta.json en dernier : le run devient visible atomiquement.
         meta_local = staging / "meta.json"

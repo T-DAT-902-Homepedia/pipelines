@@ -28,8 +28,10 @@ from duckpipe.sources import DVF_URL_TEMPLATE, SOURCES  # noqa: F401 — DVF_URL
 GCS_BUCKET = "gs://homepedia-data"
 # Bucket public servant les artefacts web statiques à la webapp (cf. ADR-0013).
 WEB_BUCKET = "gs://homepedia-web"
-# Millésimes DVF annexes intégrés à l'évolution des prix des fiches communes.
-WEB_MILLESIMES = [2021, 2022]
+# Millésimes DVF annexes intégrés à l'évolution des prix des fiches communes
+# et aux séries annuelles charts/prix_series.json (2024 = année du run ;
+# geo-dvf ne conserve que les ~5 derniers millésimes).
+WEB_MILLESIMES = [2021, 2022, 2023, 2025]
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ SILVER_PATHS = {
     "commune_geom_1000m": "communes_geom/communes_geom_1000m.parquet",
     "dept_geom_100m": "dept_geom/dept_geom_100m.parquet",
     "dept_geom_1000m": "dept_geom/dept_geom_1000m.parquet",
+    "region_geom_1000m": "region_geom/region_geom_1000m.parquet",
     "dvf": "dvf_clean/year={year}/dvf.parquet",
     "commune_agg": "commune_agg/year={year}/commune_agg.parquet",
     "commune_agg_type": "commune_agg_type/year={year}/commune_agg_type.parquet",
@@ -86,6 +89,11 @@ SILVER_PATHS = {
     "dpe": "dpe_commune/dpe.parquet",
     "climat": "climat_commune/climat.parquet",
     "proximite_metropole": "proximite_commune/proximite_metropole.parquet",
+    # Avis ville-ideale : produits par l'étape NLP externe (package ville_ideale),
+    # pas par un pipeline duckpipe. Chemins stables (non millésimés).
+    "avis": "avis_clean/avis.parquet",
+    "avis_segments": "avis_nlp/segments.parquet",
+    "avis_tokens": "avis_nlp/tokens.parquet",
 }
 
 SEMICOLON_CSV = {"delim": ";", "ignore_errors": True}
@@ -97,6 +105,10 @@ def gold_score_path(env: Environment, run_date: str) -> str:
 
 def gold_latest_path(env: Environment) -> str:
     return f"{env.gold_root}/score_territoire/latest/score.parquet"
+
+
+def gold_avis_path(env: Environment, run_date: str) -> str:
+    return f"{env.gold_root}/avis_commune/run_date={run_date}/avis_commune.parquet"
 
 
 def dq_report_path(env: Environment, kind: str, run_date: str) -> str:
@@ -149,6 +161,10 @@ def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
     catalog.add(
         "depts_1000m_raw",
         GeoJsonDataset(f"{bronze}/{SOURCES['geometries_departements_1000m'].bronze_path}"),
+    )
+    catalog.add(
+        "regions_1000m_raw",
+        GeoJsonDataset(f"{bronze}/{SOURCES['geometries_regions_1000m'].bronze_path}"),
     )
     catalog.add("arrets_raw", CsvDataset(f"{bronze}/{SOURCES['transport'].bronze_path}"))
     catalog.add(
@@ -214,5 +230,6 @@ def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
 
     # --- Gold ----------------------------------------------------------------
     catalog.add("score_territoire", ParquetDataset(gold_score_path(env, run_date)))
+    catalog.add("avis_commune", ParquetDataset(gold_avis_path(env, run_date)))
 
     return catalog

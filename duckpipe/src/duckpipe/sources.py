@@ -84,6 +84,14 @@ SOURCES: dict[str, SourceSpec] = {
         ),
         bronze_path="geom/departements-1000m.geojson",
     ),
+    "geometries_regions_1000m": SourceSpec(
+        name="geometries_regions_1000m",
+        url=(
+            "https://etalab-datasets.geo.data.gouv.fr/contours-administratifs/2025/"
+            "geojson/regions-1000m.geojson"
+        ),
+        bronze_path="geom/regions-1000m.geojson",
+    ),
     "transport": SourceSpec(
         name="transport",
         url="https://transport.data.gouv.fr/resources/81333/download",

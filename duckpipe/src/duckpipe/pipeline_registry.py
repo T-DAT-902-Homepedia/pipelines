@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from duckpipe.node import Pipeline
+from duckpipe.pipelines.avis import avis_pipeline
 from duckpipe.pipelines.climat import climat_pipeline
 from duckpipe.pipelines.dpe import dpe_pipeline
 from duckpipe.pipelines.dvf import dvf_pipeline
@@ -39,4 +40,5 @@ def register_pipelines() -> dict[str, Pipeline]:
         "climat": climat_pipeline,
         "proximite_metropole": proximite_metropole_pipeline,
         "score": score_pipeline,
+        "avis": avis_pipeline,
     }

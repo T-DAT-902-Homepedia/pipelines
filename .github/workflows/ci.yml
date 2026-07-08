@@ -29,3 +29,27 @@ jobs:
       # sont sautés automatiquement en CI : seule la suite hors-ligne tourne.
       - name: Tests
         run: uv run pytest -q
+
+  ville_ideale:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ville_ideale
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: ville_ideale/uv.lock
+
+      # Base + dev seulement : ni torch ni spaCy en CI (les tests qui en
+      # dépendent s'auto-skippent via importorskip). Garde le job léger.
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Lint
+        run: uv run ruff check homepedia_ville_ideale tests
+
+      - name: Tests (hors-ligne)
+        run: uv run pytest -q

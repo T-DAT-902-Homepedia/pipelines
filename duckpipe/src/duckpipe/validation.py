@@ -163,6 +163,60 @@ def validate_gold(
     return report
 
 
+def validate_gold_avis(
+    con: duckdb.DuckDBPyConnection,
+    avis_table: str = "avis_commune",
+    *,
+    report_dest: str | None = None,
+) -> dict:
+    """Contrôles gold sur ``avis_commune`` : bornes du sentiment, cohérence du
+    flag low_data, n_avis positif, nuage non vide quand il y a des avis.
+
+    Volontairement plus souple que le score (pas de seuil de volumétrie : la
+    couverture avis est partielle par nature). Appelé dans un try/except par le
+    CLI : l'absence de la table n'échoue pas le run (étape NLP non produite).
+    """
+    n = con.execute(f"SELECT count(*) FROM {avis_table}").fetchone()[0]
+    n_sent_hs = con.execute(
+        f"SELECT count(*) FROM {avis_table} "
+        "WHERE sentiment_global IS NOT NULL "
+        "AND (sentiment_global < -1 OR sentiment_global > 1)"
+    ).fetchone()[0]
+    n_avis_bad = con.execute(
+        f"SELECT count(*) FROM {avis_table} WHERE n_avis <= 0"
+    ).fetchone()[0]
+    n_low_incoherent = con.execute(
+        f"SELECT count(*) FROM {avis_table} WHERE low_data <> (n_avis < 10)"
+    ).fetchone()[0]
+    n_wordcloud_vide = con.execute(
+        f"SELECT count(*) FROM {avis_table} WHERE n_avis > 0 AND len(wordcloud) = 0"
+    ).fetchone()[0]
+
+    report = {
+        "nb_communes_avis": n,
+        "nb_sentiment_hors_bornes": n_sent_hs,
+        "nb_n_avis_non_positif": n_avis_bad,
+        "nb_low_data_incoherent": n_low_incoherent,
+        "nb_wordcloud_vide": n_wordcloud_vide,
+    }
+
+    critical_failures: list[str] = []
+    if n_sent_hs:
+        critical_failures.append(f"{n_sent_hs} sentiments hors [-1, 1]")
+    if n_avis_bad:
+        critical_failures.append(f"{n_avis_bad} communes avec n_avis <= 0")
+    if n_low_incoherent:
+        critical_failures.append(f"{n_low_incoherent} flags low_data incohérents")
+
+    if report_dest:
+        _write_report(report, report_dest)
+    if critical_failures:
+        raise CriticalValidationError(
+            "contrôles gold avis en échec : " + " ; ".join(critical_failures)
+        )
+    return report
+
+
 def publish(run_uri: str, latest_uri: str) -> None:
     """Copie le score du run (`.../run_date=X/score.parquet`) vers le chemin
     stable `latest/` lu par l'API. Fonctionne en local (tests) et sur GCS.

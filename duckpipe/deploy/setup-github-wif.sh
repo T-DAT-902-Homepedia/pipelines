@@ -40,6 +40,13 @@ gcloud iam service-accounts add-iam-policy-binding "${RUNNER_SA}" \
   --member="serviceAccount:${DEPLOYER_SA}" \
   --role=roles/iam.serviceAccountUser --project "${PROJECT_ID}"
 
+# Écriture bronze/silver du bucket data : requis par le workflow nlp-avis.yml
+# (l'étape NLP des avis produit ses Parquet silver directement sur GCS).
+# Portée au seul bucket homepedia-data, pas au projet entier.
+gcloud storage buckets add-iam-policy-binding "gs://homepedia-data" \
+  --member="serviceAccount:${DEPLOYER_SA}" \
+  --role=roles/storage.objectAdmin --project "${PROJECT_ID}"
+
 # 3. Seul CE dépôt GitHub peut impersoner github-deployer.
 gcloud iam service-accounts add-iam-policy-binding "${DEPLOYER_SA}" \
   --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github/attribute.repository/${GITHUB_REPO}" \
