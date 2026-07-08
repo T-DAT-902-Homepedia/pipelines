@@ -258,7 +258,9 @@ def _generate_artifacts(
     )
 
     # Échantillon de mutations pour la heatmap (chargé lazy côté front).
-    export_web.build_points_sample(con, "dvf")
+    # 250k points : assez dense pour la heatmap MEAN de prix hors métropoles,
+    # ~3 Mo gzip sur le CDN.
+    export_web.build_points_sample(con, "dvf", n=250_000)
     _copy_json(
         con,
         "SELECT * FROM web_points_sample",
