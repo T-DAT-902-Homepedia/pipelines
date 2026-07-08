@@ -161,16 +161,36 @@ def build_choropleth_departements(
     con: duckdb.DuckDBPyConnection,
     dept_geom: str,
     dept_agg: str,
+    score_territoire: str,
     *,
     out_table: str = "web_choropleth_departements",
 ) -> str:
-    """Table choroplèthe départementale : même forme que les communes
-    (sans score, calculé au grain communal uniquement). `dept_geom` désigne
-    la variante de géométrie voulue (1000m pour le LOD low, 100m pour le mid).
-    `code_region`/`nom_region` (additifs) permettent le drill-down régions ->
-    départements côté client sans table de correspondance embarquée au front.
+    """Table choroplèthe départementale : même forme que les communes,
+    complétée par les agrégats du score au grain communal (médianes des
+    communes scorées : score, gap et les 12 dimensions — mêmes noms `n_*`
+    qu'à la maille communale pour que la carte bascule de maille sans
+    adaptation). `dept_geom` désigne la variante de géométrie voulue (1000m
+    pour le LOD low, 100m pour le mid). `code_region`/`nom_region` (additifs)
+    permettent le drill-down régions -> départements côté client.
     """
     ensure_region_mapping(con)
+    dims_medians = ", ".join(
+        f"round(median(s.{d}), 3) AS {d}" for d in SCORE_DIMENSIONS
+    )
+    con.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE dept_score AS
+        SELECT
+            s.code_departement,
+            count(*) AS nb_communes_scorees,
+            round(median(s.score_valeur), 3) AS score_median,
+            round(median(s.gap_pondere), 3) AS gap_pondere_median,
+            {dims_medians}
+        FROM {score_territoire} s
+        GROUP BY s.code_departement
+        """
+    )
+    dims_cols = ", ".join(f"sc.{d}" for d in SCORE_DIMENSIONS)
     con.execute(
         f"""
         CREATE OR REPLACE TABLE {out_table} AS
@@ -188,6 +208,10 @@ def build_choropleth_departements(
             ap.prix_m2_median AS appart_prix_m2_median,
             coalesce(ap.nb_transactions, 0) AS appart_nb_transactions,
             coalesce(ap.fiable, false) AS appart_fiable,
+            sc.score_median,
+            sc.gap_pondere_median,
+            coalesce(sc.nb_communes_scorees, 0) AS nb_communes_scorees,
+            {dims_cols},
             g.geom
         FROM {dept_geom} g
         LEFT JOIN {dept_agg} t
@@ -197,6 +221,7 @@ def build_choropleth_departements(
         LEFT JOIN {dept_agg} ap
             ON ap.code_departement = g.code_departement AND ap.type_local = 'Appartement'
         LEFT JOIN region_mapping rm ON rm.code_departement = g.code_departement
+        LEFT JOIN dept_score sc ON sc.code_departement = g.code_departement
         """
     )
     return out_table
@@ -232,6 +257,9 @@ def build_choropleth_regions(
         GROUP BY GROUPING SETS ((rm.code_region), (rm.code_region, d.type_local))
         """
     )
+    dims_medians = ", ".join(
+        f"round(median(s.{d}), 3) AS {d}" for d in SCORE_DIMENSIONS
+    )
     con.execute(
         f"""
         CREATE OR REPLACE TEMP TABLE region_score AS
@@ -239,7 +267,8 @@ def build_choropleth_regions(
             rm.code_region,
             count(*) AS nb_communes_scorees,
             round(median(s.score_valeur), 3) AS score_median,
-            round(median(s.gap_pondere), 3) AS gap_pondere_median
+            round(median(s.gap_pondere), 3) AS gap_pondere_median,
+            {dims_medians}
         FROM {score_territoire} s
         JOIN region_mapping rm USING (code_departement)
         GROUP BY rm.code_region
@@ -263,6 +292,7 @@ def build_choropleth_regions(
             sc.score_median,
             sc.gap_pondere_median,
             coalesce(sc.nb_communes_scorees, 0) AS nb_communes_scorees,
+            {", ".join(f"sc.{d}" for d in SCORE_DIMENSIONS)},
             g.geom
         FROM {region_geom} g
         LEFT JOIN region_agg t

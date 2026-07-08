@@ -155,7 +155,11 @@ def _generate_artifacts(
         ("mid", "dept_geom_100m", PRECISION_MID),
     ]:
         table = export_web.build_choropleth_departements(
-            con, geom_table, "dept_agg", out_table=f"web_choropleth_departements_{lod}"
+            con,
+            geom_table,
+            "dept_agg",
+            "score_territoire",
+            out_table=f"web_choropleth_departements_{lod}",
         )
         _copy_geojson(
             con,

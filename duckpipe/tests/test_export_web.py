@@ -418,11 +418,22 @@ def test_choropleth_departements_expose_region(full_con, tmp_path: Path) -> None
         "('01', NULL, 13, 2200.0, true), ('01', 'Maison', 8, 2400.0, true)"
         ") AS v(code_departement, type_local, nb_transactions, prix_m2_median, fiable)"
     )
-    export_web.build_choropleth_departements(full_con, "dept_geom_1000m", "dept_agg")
+    export_web.build_choropleth_departements(
+        full_con, "dept_geom_1000m", "dept_agg", "score_territoire"
+    )
     row = full_con.execute(
         "SELECT code_region, nom_region FROM web_choropleth_departements"
     ).fetchone()
     assert row == ("84", "Auvergne-Rhône-Alpes")
+
+    # Agrégats du score au grain départemental : mêmes noms n_* qu'à la maille
+    # communale (bascule de maille sans adaptation côté front). Le dept 01 n'a
+    # qu'une commune scorée (Alpha) : les médianes valent ses valeurs.
+    score = full_con.execute(
+        "SELECT score_median, gap_pondere_median, nb_communes_scorees, n_emploi, n_prix "
+        "FROM web_choropleth_departements"
+    ).fetchone()
+    assert tuple(float(v) for v in score) == (0.6, 0.05, 1.0, 0.6, 0.4)
 
 
 def test_region_mapping_covers_all_departements(con) -> None:
