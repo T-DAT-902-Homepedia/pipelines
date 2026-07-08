@@ -502,3 +502,17 @@ def test_dept_code_expr_pads_without_truncating(con) -> None:
         "971": "971",  # lpad natif tronquerait en '97'
         " 974 ": "974",
     }
+
+
+def test_avis_index_centers(full_con) -> None:
+    _seed_avis(full_con)
+    export_web.build_avis(full_con, "avis_commune")
+    export_web.build_avis_index(full_con, "web_avis", "commune_geom")
+    rows = full_con.execute(
+        "SELECT c, n, n_avis, lng, lat FROM web_avis_index ORDER BY c"
+    ).fetchall()
+    # Alpha = carré (0 0)-(1 1) -> centre (0.5, 0.5) ; Beta = (1 0)-(2 1).
+    assert rows == [
+        ("01001", "Alpha", 12, 0.5, 0.5),
+        ("01002", "Beta", 4, 1.5, 0.5),
+    ]

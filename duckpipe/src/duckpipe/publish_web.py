@@ -239,6 +239,13 @@ def _generate_artifacts(
             f"SELECT * FROM web_avis WHERE code_departement = '{dept}' ORDER BY code_commune",
             staging / "avis" / f"{dept}.json",
         )
+    if avis_departements:
+        export_web.build_avis_index(con, "web_avis", "commune_geom")
+        _copy_json(
+            con,
+            "SELECT * FROM web_avis_index",
+            staging / "avis" / "index.json",
+        )
 
     export_web.build_search_index(con, "commune_geom", "commune_agg", "score_territoire")
     _copy_json(con, "SELECT * FROM web_search_index", staging / "search" / "index.json")

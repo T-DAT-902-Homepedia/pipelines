@@ -519,6 +519,35 @@ def build_avis(
     return out_table
 
 
+def build_avis_index(
+    con: duckdb.DuckDBPyConnection,
+    web_avis: str,
+    commune_geom: str,
+    *,
+    out_table: str = "web_avis_index",
+) -> str:
+    """Table `web_avis_index` : les communes couvertes par l'analyse d'avis,
+    avec leur centre (centroïde du contour) — permet à la carte de poser les
+    marqueurs « avis » sans télécharger les analyses complètes ni embarquer
+    de données locales côté front.
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE {out_table} AS
+        SELECT
+            a.code_commune AS c,
+            a.nom_ville AS n,
+            a.n_avis,
+            CAST(round(ST_X(ST_Centroid(g.geom)), 4) AS DOUBLE) AS lng,
+            CAST(round(ST_Y(ST_Centroid(g.geom)), 4) AS DOUBLE) AS lat
+        FROM {web_avis} a
+        JOIN {commune_geom} g USING (code_commune)
+        ORDER BY a.code_commune
+        """
+    )
+    return out_table
+
+
 def build_search_index(
     con: duckdb.DuckDBPyConnection,
     commune_geom: str,
