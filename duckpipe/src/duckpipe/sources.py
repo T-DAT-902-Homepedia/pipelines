@@ -99,7 +99,8 @@ SOURCES: dict[str, SourceSpec] = {
     # Paris/Lyon/Marseille y sont codés par ARRONDISSEMENT (751xx/6938x/132xx),
     # comme dans le DVF. Repli si cette édition disparaît de la Géoplateforme :
     # GPKG (archive .7z, extracteur à écrire) ou GeoParquet IGN (encodage
-    # GeoArrow non lu par duckdb-spatial à ce jour).
+    # GeoArrow non lu par duckdb-spatial à ce jour). BROWSER_UA requis : la
+    # Géoplateforme refuse (403) le User-Agent urllib par défaut, comme l'INSEE.
     "geometries_iris": SourceSpec(
         name="geometries_iris",
         url=(
@@ -107,6 +108,7 @@ SOURCES: dict[str, SourceSpec] = {
             "CONTOURS-IRIS_3-0__FLATGEOBUF_WGS84G_FRA_2026-01-01/contours_iris.fgb"
         ),
         bronze_path="geom/contours_iris.fgb",
+        headers=BROWSER_UA,
     ),
     "transport": SourceSpec(
         name="transport",
