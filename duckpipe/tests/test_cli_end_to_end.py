@@ -210,6 +210,8 @@ def test_full_dag_via_cli(tmp_path: Path) -> None:
     )
     assert len(depts_low["features"]) == REF_N_DEPARTEMENTS
 
+    _assert_choropleth_geometries(run_root, depts_low, communes_mid)
+
     high_files = list((run_root / "choropleth" / "communes-high").glob("*.geojson"))
     fiche_files = list((run_root / "communes").glob("*.json"))
     assert len(high_files) == len(fiche_files)
@@ -231,6 +233,23 @@ def test_full_dag_via_cli(tmp_path: Path) -> None:
     assert classement[0]["rang"] == 1
 
     _assert_score_compat(web)
+
+
+def _assert_choropleth_geometries(run_root: Path, depts_low, communes_mid) -> None:
+    """Garde-fou : l'arrondi GDAL (COORDINATE_PRECISION) ne doit plus laisser
+    de GeometryCollection — la webapp ne les rend pas (Nouvelle-Aquitaine
+    affichée « Pas de donnée » malgré un score présent)."""
+    regions_low = json.loads(
+        (run_root / "choropleth" / "regions-low.geojson").read_text()
+    )
+    for collection in (regions_low, depts_low, communes_mid):
+        types = {f["geometry"]["type"] for f in collection["features"] if f["geometry"]}
+        assert types <= {"Polygon", "MultiPolygon"}
+    nouvelle_aquitaine = next(
+        f for f in regions_low["features"] if f["properties"]["code_region"] == "75"
+    )
+    assert nouvelle_aquitaine["geometry"] is not None
+    assert nouvelle_aquitaine["properties"]["score_median"] is not None
 
 
 def _assert_score_compat(web: Path) -> None:

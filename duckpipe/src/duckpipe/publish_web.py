@@ -56,6 +56,51 @@ def _copy_geojson(
         f"COPY ({query}) TO '{dest}' (FORMAT GDAL, DRIVER 'GeoJSON', "
         f"LAYER_CREATION_OPTIONS 'COORDINATE_PRECISION={precision}')"
     )
+    _repair_geometry_collections(dest)
+
+
+def _polygonal_parts(geometry: dict) -> list:
+    """Coordonnées polygonales d'une géométrie, collections imbriquées comprises."""
+    if geometry["type"] == "Polygon":
+        return [geometry["coordinates"]]
+    if geometry["type"] == "MultiPolygon":
+        return list(geometry["coordinates"])
+    if geometry["type"] == "GeometryCollection":
+        return [p for g in geometry["geometries"] for p in _polygonal_parts(g)]
+    return []  # Point/LineString : artefacts d'effondrement, écartés
+
+
+def _repair_geometry_collections(dest: Path) -> None:
+    """Rétablit Polygon/MultiPolygon sur les features que l'arrondi GDAL a cassées.
+
+    COORDINATE_PRECISION effondre les îles plus petites que la grille en
+    Point/LineString dégénérés et le driver GeoJSON emballe alors la feature
+    dans une GeometryCollection (parfois imbriquée), que la webapp ne rend pas
+    — la région y apparaît « Pas de donnée » malgré un score présent.
+    """
+    data = json.loads(dest.read_text())
+    changed = False
+    for feature in data["features"]:
+        geometry = feature.get("geometry")
+        if not geometry or geometry["type"] != "GeometryCollection":
+            continue
+        parts = _polygonal_parts(geometry)
+        if not parts:
+            logger.warning(
+                "%s : feature %s sans partie polygonale après arrondi",
+                dest.name,
+                feature.get("properties"),
+            )
+        feature["geometry"] = (
+            None
+            if not parts
+            else {"type": "Polygon", "coordinates": parts[0]}
+            if len(parts) == 1
+            else {"type": "MultiPolygon", "coordinates": parts}
+        )
+        changed = True
+    if changed:
+        dest.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
 
 def _copy_json(con: duckdb.DuckDBPyConnection, query: str, dest: Path) -> None:
