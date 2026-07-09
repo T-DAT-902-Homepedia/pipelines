@@ -31,3 +31,4 @@ Records).
 | [0012](0012-ci-cd-github-actions-wif.md) | CI/CD GitHub Actions avec Workload Identity Federation | accepted | 2026-07-02 |
 | [0013](0013-serving-statique-cdn.md) | Serving statique : artefacts web pré-générés sur bucket public | accepted | 2026-07-02 |
 | [0014](0014-consolidation-export-web.md) | Consolidation de l'export web : publish-web chemin unique | accepted | 2026-07-03 |
+| [0015](0015-maille-quartier-iris.md) | Maille quartier : agrégats prix et gap qualité-prix à l'IRIS | accepted | 2026-07-09 |

@@ -110,9 +110,9 @@ def _copy_json(con: duckdb.DuckDBPyConnection, query: str, dest: Path) -> None:
 
 def _load_tables(
     con: duckdb.DuckDBPyConnection, catalog, year: int
-) -> tuple[dict[int, str], bool]:
+) -> tuple[dict[int, str], bool, bool]:
     """Charge toutes les tables nécessaires ; renvoie (millésimes disponibles,
-    présence des géométries régionales)."""
+    présence des géométries régionales, présence de la maille quartier)."""
     for table in [
         "commune_geom",
         "commune_geom_1000m",
@@ -136,6 +136,18 @@ def _load_tables(
         logger.warning("[warn] region_geom_1000m absent, export web sans maille régionale")
         has_regions = False
 
+    # Maille quartier (IRIS) : même tolérance que les régions, pour que les
+    # runs antérieurs à cette maille restent republiables.
+    has_iris = True
+    try:
+        catalog.load(con, "iris_geom")
+        catalog.load(con, "score_quartier")
+    except DatasetError:
+        logger.warning(
+            "[warn] iris_geom/score_quartier absents, export web sans maille quartier"
+        )
+        has_iris = False
+
     millesimes: dict[int, str] = {}
     for annee in catalogs.WEB_MILLESIMES:
         if annee == year:
@@ -156,7 +168,7 @@ def _load_tables(
         logger.warning("[warn] avis_commune absent, export web sans analyse d'avis")
         export_web.create_avis_stub(con)
 
-    return millesimes, has_regions
+    return millesimes, has_regions, has_iris
 
 
 def _write_payload(payload: dict, dest: Path) -> None:
@@ -165,13 +177,14 @@ def _write_payload(payload: dict, dest: Path) -> None:
     dest.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def _generate_artifacts(
+def _generate_artifacts(  # noqa: PLR0913 — un flag par famille d'artefacts optionnelle
     con: duckdb.DuckDBPyConnection,
     staging: Path,
     year: int,
     millesimes: dict[int, str],
     *,
     has_regions: bool,
+    has_iris: bool,
 ) -> None:
     """Matérialise les tables web et écrit tous les fichiers sous `staging`.
 
@@ -249,6 +262,24 @@ def _generate_artifacts(
             staging / "choropleth" / "communes-high" / f"{dept}.geojson",
             precision=PRECISION_HIGH,
         )
+
+    # Maille quartier : uniquement les communes multi-IRIS, découpée par
+    # département comme communes-high (chargée au zoom fort côté front).
+    if has_iris:
+        export_web.build_choropleth_iris(con, "iris_geom", "score_quartier")
+        iris_departements = [
+            row[0]
+            for row in con.execute(
+                "SELECT DISTINCT code_departement FROM web_choropleth_iris ORDER BY 1"
+            ).fetchall()
+        ]
+        for dept in iris_departements:
+            _copy_geojson(
+                con,
+                f"SELECT * FROM web_choropleth_iris WHERE code_departement = '{dept}'",
+                staging / "choropleth" / "iris-high" / f"{dept}.geojson",
+                precision=PRECISION_HIGH,
+            )
 
     export_web.build_evolution(con, "commune_agg", year, millesimes)
     export_web.build_fiches(
@@ -337,13 +368,16 @@ def _generate_artifacts(
     )
 
 
-def _build_meta(con: duckdb.DuckDBPyConnection, year: int, run_date: str) -> dict:
+def _build_meta(
+    con: duckdb.DuckDBPyConnection, year: int, run_date: str, *, has_iris: bool
+) -> dict:
     # schema_version reste à 1 : tous les ajouts (avis, régions, charts,
-    # points) sont ADDITIFS — le front déployé valide `z.literal(1)` et
-    # casserait sur un bump. La webapp feature-gate l'analyse d'avis sur
-    # `nb_communes_avis` (0 ou champ absent = section masquée) ; réserver
+    # points, quartiers IRIS) sont ADDITIFS — le front déployé valide
+    # `z.literal(1)` et casserait sur un bump. La webapp feature-gate
+    # l'analyse d'avis sur `nb_communes_avis` et la maille quartier sur
+    # `nb_iris` (0 ou champ absent = fonctionnalité masquée) ; réserver
     # l'incrément aux changements de contrat non rétrocompatibles.
-    return {
+    meta = {
         "schema_version": 1,
         "run_date": run_date,
         "year": year,
@@ -353,8 +387,16 @@ def _build_meta(con: duckdb.DuckDBPyConnection, year: int, run_date: str) -> dic
             "SELECT count(*) FROM web_fiches WHERE score IS NOT NULL"
         ).fetchone()[0],
         "nb_communes_avis": con.execute("SELECT count(*) FROM web_avis").fetchone()[0],
-        "generated_at": datetime.now(tz=UTC).isoformat(timespec="seconds"),
     }
+    if has_iris:
+        meta["nb_iris"] = con.execute(
+            "SELECT count(*) FROM web_choropleth_iris"
+        ).fetchone()[0]
+        meta["nb_iris_scores"] = con.execute(
+            "SELECT count(*) FROM web_choropleth_iris WHERE gap_iris IS NOT NULL"
+        ).fetchone()[0]
+    meta["generated_at"] = datetime.now(tz=UTC).isoformat(timespec="seconds")
+    return meta
 
 
 def _content_type(path: Path) -> str:
@@ -386,14 +428,16 @@ def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str
     gzippé vers le bucket public, meta.json en dernier.
     """
     catalog = catalogs.build_catalog(env, year=year, run_date=run_date)
-    millesimes, has_regions = _load_tables(con, catalog, year)
+    millesimes, has_regions, has_iris = _load_tables(con, catalog, year)
 
     run_root = catalogs.web_run_root(env, run_date)
     is_remote = fetch.is_gcs_uri(run_root)
 
     if not is_remote:
         staging = Path(run_root)
-        _generate_artifacts(con, staging, year, millesimes, has_regions=has_regions)
+        _generate_artifacts(
+            con, staging, year, millesimes, has_regions=has_regions, has_iris=has_iris
+        )
         export_web.build_score_geojson_compat(con, "web_choropleth_communes_mid")
         _copy_geojson(
             con,
@@ -401,7 +445,7 @@ def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str
             Path(catalogs.web_root(env)) / "score.geojson",
             precision=PRECISION_MID,
         )
-        meta = _build_meta(con, year, run_date)
+        meta = _build_meta(con, year, run_date, has_iris=has_iris)
         meta_path = Path(catalogs.web_root(env)) / "meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -410,8 +454,10 @@ def publish_web(con: duckdb.DuckDBPyConnection, env, *, year: int, run_date: str
 
     with tempfile.TemporaryDirectory() as tmpdir:
         staging = Path(tmpdir)
-        _generate_artifacts(con, staging, year, millesimes, has_regions=has_regions)
-        meta = _build_meta(con, year, run_date)
+        _generate_artifacts(
+            con, staging, year, millesimes, has_regions=has_regions, has_iris=has_iris
+        )
+        meta = _build_meta(con, year, run_date, has_iris=has_iris)
 
         files = sorted(path for path in staging.rglob("*") if path.is_file())
         logger.info("[upload] %d artefacts vers %s", len(files), run_root)

@@ -10,14 +10,16 @@ if TYPE_CHECKING:
 
 
 class GeoJsonDataset(Dataset):
-    """Dataset GeoJSON, lu via `ST_Read` (extension `spatial` DuckDB).
+    """Dataset vectoriel lu via `ST_Read` (extension `spatial` DuckDB) : tout
+    format géré par les drivers GDAL embarqués — GeoJSON (contours Etalab)
+    comme FlatGeoBuf (CONTOURS-IRIS® IGN).
 
     `ST_Read` passe par GDAL et non par `httpfs` : contrairement aux CSV et
     Parquet, un chemin `gs://` n'est pas lisible directement — on télécharge
     alors l'objet vers un fichier temporaire avant lecture.
 
-    Écriture non supportée : les GeoJSON de ce pipeline sont uniquement des
-    sources en entrée (contours communaux/départementaux), jamais des sorties.
+    Écriture non supportée : ces fichiers sont uniquement des sources en
+    entrée (contours communaux/départementaux/IRIS), jamais des sorties.
     """
 
     def __init__(self, path: str) -> None:

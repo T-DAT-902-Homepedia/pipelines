@@ -173,6 +173,30 @@ GEOM_RULES = [
     ),
 ]
 
+IRIS_GEOM_RULES = [
+    Rule("code iris sur 9 caracteres", "length(code_iris) <> 9", critical=True),
+    Rule("code commune sur 5 caracteres", "length(code_commune) <> 5", critical=True),
+    Rule("geometrie presente", "geom IS NULL", critical=True),
+    Rule("type iris attendu (H/A/D/Z)", "type_iris NOT IN ('H', 'A', 'D', 'Z')", critical=True),
+    Rule("nb d'iris de la commune >= 1", "nb_iris_commune < 1", critical=True),
+]
+
+IRIS_PRIX_RULES = [
+    Rule("code iris sur 9 caracteres", "length(code_iris) <> 9", critical=True),
+    Rule("code commune sur 5 caracteres", "length(code_commune) <> 5", critical=True),
+    Rule(
+        "prix/m2 median dans les bornes plausibles",
+        "prix_m2_median < 100 OR prix_m2_median > 50000",
+        critical=True,
+    ),
+    Rule("nb de transactions strictement positif", "nb_transactions <= 0", critical=True),
+    Rule(
+        "fenetre de millesimes coherente",
+        "annee_min > annee_max OR nb_millesimes < 1",
+        critical=True,
+    ),
+]
+
 TRANSPORT_RULES = [
     Rule("nombre d'arrets non negatif", "nb_arrets < 0", critical=True),
     Rule("densite non negative", "densite_arrets_km2 < 0", critical=True),
@@ -320,6 +344,8 @@ AVIS_SEGMENTS_RULES = [
 # Association table silver -> règles, consommée par validate_silver.
 SILVER_RULES: dict[str, list[Rule]] = {
     "dvf": DVF_RULES,
+    "iris_geom": IRIS_GEOM_RULES,
+    "iris_prix": IRIS_PRIX_RULES,
     "commune_transport": TRANSPORT_RULES,
     "revenus": REVENUS_RULES,
     "risques": RISQUES_RULES,

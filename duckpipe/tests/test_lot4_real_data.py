@@ -23,8 +23,12 @@ pytestmark = pytest.mark.skipif(
     not EXPLORATION_RAW.exists(), reason="exploration/data/raw introuvable en local"
 )
 
-# Comptes de référence observés dans exploration/data/exploration.duckdb
-REF_PRIX_MILLESIME = {2021: 31447, 2022: 31248}
+# Comptes de référence observés dans exploration/data/exploration.duckdb.
+# Exception 2022 : geo-dvf republie ses millésimes sous la même URL `latest`
+# et le brut local a été re-téléchargé le 2026-06-30 (31 250 communes, +2 vs
+# la base de référence bâtie sur la version du 2026-06-25) — compte re-dérivé
+# du fichier courant, la base de référence n'ayant pas été reconstruite.
+REF_PRIX_MILLESIME = {2021: 31447, 2022: 31250}
 
 
 @pytest.fixture
@@ -44,12 +48,24 @@ def test_prix_millesime(con, annee: int) -> None:
         ),
     )
     catalog.add(f"commune_prix_{annee}", MemoryDataset())
+    catalog.add(f"dvf_points_{annee}", MemoryDataset())
 
     pipeline = make_prix_millesime_pipeline(annee)
     pipeline.run(con, catalog)
 
     n = con.execute(f"SELECT count(*) FROM commune_prix_{annee}").fetchone()[0]
     assert n == REF_PRIX_MILLESIME[annee]
+
+    # dvf_points porte les mêmes mutations que l'agrégat communal, au grain
+    # unitaire (consommées par iris_prix).
+    n_points, n_geoloc = con.execute(
+        f"SELECT count(*), count(longitude) FROM dvf_points_{annee}"
+    ).fetchone()
+    n_agg = con.execute(
+        f"SELECT sum(nb_transactions) FROM commune_prix_{annee}"
+    ).fetchone()[0]
+    assert n_points == n_agg
+    assert n_geoloc == n_points  # coordonnées garanties par le nettoyage
 
 
 def test_quality_validate_on_commune_geom(con) -> None:

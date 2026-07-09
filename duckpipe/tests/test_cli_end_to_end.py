@@ -48,6 +48,7 @@ BRONZE_LAYOUT = {
     "departements-100m.geojson": "geom/departements-100m.geojson",
     "departements-1000m.geojson": "geom/departements-1000m.geojson",
     "regions-1000m.geojson": "geom/regions-1000m.geojson",
+    "contours_iris.fgb": "geom/contours_iris.fgb",
     "arrets_transport.csv": "transport/arrets_transport.csv",
     "revenus_commune_filosofi_2021.csv": "revenus/revenus_commune_filosofi_2021.csv",
     "catnat_gaspar.csv": "risques/catnat_gaspar.csv",
@@ -66,6 +67,7 @@ PIPELINE_ORDER = [
     "geometries",
     "geometries_web",
     "dvf",
+    "iris_geom",
     "transport",
     "revenus",
     "risques",
@@ -151,14 +153,8 @@ def test_avis_pipeline_and_web_export(tmp_path: Path) -> None:
     assert sample[2] > 0  # nuage non vide
 
 
-@requires_exploration
-def test_full_dag_via_cli(tmp_path: Path) -> None:
-    root = tmp_path / "data"
-    for raw_name, bronze_path in BRONZE_LAYOUT.items():
-        dest = root / "bronze" / bronze_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.symlink_to(EXPLORATION_RAW / raw_name)
-
+def _run_full_dag(root: Path) -> None:
+    """Déroule toutes les étapes CLI du DAG dans l'ordre de Cloud Workflows."""
     common = ["--env", "local", "--local-root", str(root), "--run-date", RUN_DATE]
 
     for pipeline_name in PIPELINE_ORDER:
@@ -168,13 +164,32 @@ def test_full_dag_via_cli(tmp_path: Path) -> None:
     main(["run", "prix_millesime", "--env", "local", "--local-root", str(root),
           "--year", "2021", "--run-date", RUN_DATE])
 
+    # Agrégat prix quartier : pool 2024 + dvf_points_2021 (2022/2023/2025
+    # absents : fenêtre réduite, tolérée).
+    main(["run", "iris_prix", *common])
+
     main(["validate-silver", *common])
     main(["run", "score", *common])
+    main(["run", "score_quartier", *common])
     main(["validate-gold", *common])
     main(["publish", *common])
 
+
+@requires_exploration
+def test_full_dag_via_cli(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    for raw_name, bronze_path in BRONZE_LAYOUT.items():
+        dest = root / "bronze" / bronze_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.symlink_to(EXPLORATION_RAW / raw_name)
+
+    common = ["--env", "local", "--local-root", str(root), "--run-date", RUN_DATE]
+    _run_full_dag(root)
+
     latest = root / "gold" / "score_territoire" / "latest" / "score.parquet"
     assert latest.exists()
+    latest_quartier = root / "gold" / "score_quartier" / "latest" / "score_quartier.parquet"
+    assert latest_quartier.exists()
     con = duckdb.connect(":memory:")
     n = con.execute(f"SELECT count(*) FROM read_parquet('{latest}')").fetchone()[0]
     assert n == REF_N_COMMUNES_SCOREES
@@ -211,6 +226,7 @@ def test_full_dag_via_cli(tmp_path: Path) -> None:
     assert len(depts_low["features"]) == REF_N_DEPARTEMENTS
 
     _assert_choropleth_geometries(run_root, depts_low, communes_mid)
+    _assert_choropleth_iris(run_root, meta)
 
     high_files = list((run_root / "choropleth" / "communes-high").glob("*.geojson"))
     fiche_files = list((run_root / "communes").glob("*.json"))
@@ -250,6 +266,45 @@ def _assert_choropleth_geometries(run_root: Path, depts_low, communes_mid) -> No
     )
     assert nouvelle_aquitaine["geometry"] is not None
     assert nouvelle_aquitaine["properties"]["score_median"] is not None
+
+
+def _assert_choropleth_iris(run_root: Path, meta: dict) -> None:
+    """Maille quartier : découpage par département, communes multi-IRIS
+    uniquement, gap variant à l'intérieur d'une ville, arrondissements PLM
+    couverts (là où la choroplèthe communale n'a pas de donnée Paris)."""
+    iris_files = list((run_root / "choropleth" / "iris-high").glob("*.geojson"))
+    assert len(iris_files) > 90  # quasi tous les départements ont une ville irisée
+    # ~16,4k IRIS des 1 944 communes multi-IRIS (les mono-IRIS sont exclus).
+    assert 14_000 < meta["nb_iris"] < 20_000
+    assert meta["nb_iris_scores"] > 5_000
+    # Garde-fou volumétrie CDN : aucun département ne dépasse 3 Mo bruts.
+    assert max(f.stat().st_size for f in iris_files) < 3_000_000
+
+    iris_33 = json.loads((run_root / "choropleth" / "iris-high" / "33.geojson").read_text())
+    types = {f["geometry"]["type"] for f in iris_33["features"] if f["geometry"]}
+    assert types <= {"Polygon", "MultiPolygon"}
+    bordeaux = [
+        f["properties"]
+        for f in iris_33["features"]
+        if f["properties"]["code_commune"] == "33063"
+    ]
+    assert len(bordeaux) > 50  # Bordeaux compte ~90 IRIS
+    gaps = {p["gap_iris"] for p in bordeaux if p["gap_iris"] is not None}
+    assert len(gaps) > 1  # le gap varie entre quartiers d'une même ville
+    sample = next(p for p in bordeaux if p["gap_iris"] is not None)
+    assert {"code_iris", "nom", "nom_commune", "prix_m2_median", "score_commune",
+            "gap_pondere_iris", "annee_min", "annee_max"} <= set(sample)
+    assert 2021 <= sample["annee_min"] <= sample["annee_max"] <= 2024  # fenêtre poolée
+
+    # PLM : les IRIS parisiens sont rattachés aux arrondissements (751xx).
+    iris_75 = json.loads((run_root / "choropleth" / "iris-high" / "75.geojson").read_text())
+    paris = [
+        f["properties"]
+        for f in iris_75["features"]
+        if f["properties"]["code_commune"].startswith("751")
+    ]
+    assert len(paris) > 800  # ~990 IRIS parisiens
+    assert any(p["gap_iris"] is not None for p in paris)
 
 
 def _assert_score_compat(web: Path) -> None:

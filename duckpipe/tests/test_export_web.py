@@ -490,6 +490,71 @@ def test_prix_series_weighted_median_and_nulls(full_con) -> None:
     assert payload["communes"].get("01002", [None, None]) == [None, None]
 
 
+def test_choropleth_iris_filtre_et_props(geo_con, tmp_path: Path) -> None:
+    """Choroplèthe quartier : communes mono-IRIS exclues, LEFT JOIN tolérant
+    (IRIS non scoré = properties nulles), gap arrondi et département dérivé."""
+    con = geo_con
+    con.execute(
+        """
+        CREATE TABLE iris_geom AS SELECT * FROM (VALUES
+            ('010010000', '01001', 'Alpha', 'Alpha', 'Z', 1,
+             ST_GeomFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))')),
+            ('010020101', '01002', 'Beta', 'Beta Ouest', 'H', 2,
+             ST_GeomFromText('POLYGON((1 0, 1.5 0, 1.5 1, 1 1, 1 0))')),
+            ('010020102', '01002', 'Beta', 'Beta Est', 'H', 2,
+             ST_GeomFromText('POLYGON((1.5 0, 2 0, 2 1, 1.5 1, 1.5 0))')),
+            ('974110102', '97411', 'Saint-Denis', 'Centre', 'H', 2,
+             ST_GeomFromText('POLYGON((3 3, 4 3, 4 4, 3 4, 3 3))'))
+        ) AS v(code_iris, code_commune, nom_commune, nom_iris, type_iris,
+               nb_iris_commune, geom)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE score_quartier AS SELECT
+            '010020101' AS code_iris, '01002' AS code_commune,
+            'Beta Ouest' AS nom_iris, 'H' AS type_iris, 2 AS nb_iris_commune,
+            'Beta' AS nom_commune, '01' AS code_departement,
+            7 AS nb_transactions, 2149.6::DOUBLE AS prix_m2_median,
+            2021 AS annee_min, 2024 AS annee_max, 2 AS nb_millesimes,
+            0.5::DOUBLE AS n_prix_iris, 0.62::DOUBLE AS score_commune,
+            0.4::DOUBLE AS n_prix_commune, 0.8::DOUBLE AS n_access_fin_commune,
+            0.1234::DOUBLE AS gap_iris, 0.0987::DOUBLE AS gap_pondere_iris
+        """
+    )
+    export_web.build_choropleth_iris(con, "iris_geom", "score_quartier")
+    dest = tmp_path / "iris.geojson"
+    con.execute(
+        f"COPY (SELECT * FROM web_choropleth_iris) TO '{dest}' "
+        f"(FORMAT GDAL, DRIVER 'GeoJSON', LAYER_CREATION_OPTIONS 'COORDINATE_PRECISION=4')"
+    )
+
+    features = {
+        f["properties"]["code_iris"]: f["properties"]
+        for f in json.loads(dest.read_text())["features"]
+    }
+    # Alpha (mono-IRIS) exclue ; les 3 IRIS multi restent.
+    assert set(features) == {"010020101", "010020102", "974110102"}
+
+    ouest = features["010020101"]
+    assert ouest["nom"] == "Beta Ouest"
+    assert ouest["nom_commune"] == "Beta"
+    assert ouest["code_departement"] == "01"
+    assert ouest["prix_m2_median"] == 2150  # arrondi entier
+    assert ouest["fiable"] is True
+    assert ouest["gap_iris"] == 0.123  # arrondi 3 décimales
+    assert ouest["score_commune"] == 0.62
+    assert ouest["annee_min"] == 2021
+
+    est = features["010020102"]  # IRIS non scoré : pas de donnée, pas d'erreur
+    assert est["fiable"] is False
+    assert est["nb_transactions"] == 0
+    assert est["prix_m2_median"] is None
+    assert est["gap_iris"] is None
+
+    assert features["974110102"]["code_departement"] == "974"  # outre-mer
+
+
 def test_dept_code_expr_pads_without_truncating(con) -> None:
     rows = con.execute(
         f"SELECT code, {dept_code_expr('code')} FROM (VALUES "

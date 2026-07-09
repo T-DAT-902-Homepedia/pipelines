@@ -8,10 +8,12 @@ from duckpipe.pipelines.dvf import dvf_pipeline
 from duckpipe.pipelines.emploi import emploi_pipeline
 from duckpipe.pipelines.equipements import equipements_pipeline
 from duckpipe.pipelines.geometries import geometries_pipeline, geometries_web_pipeline
+from duckpipe.pipelines.iris import iris_geom_pipeline
 from duckpipe.pipelines.proximite_metropole import proximite_metropole_pipeline
 from duckpipe.pipelines.revenus import revenus_pipeline
 from duckpipe.pipelines.risques import risques_pipeline
 from duckpipe.pipelines.score import score_pipeline
+from duckpipe.pipelines.score_quartier import score_quartier_pipeline
 from duckpipe.pipelines.securite import securite_pipeline
 from duckpipe.pipelines.tourisme import tourisme_pipeline
 from duckpipe.pipelines.transport import transport_pipeline
@@ -21,14 +23,16 @@ def register_pipelines() -> dict[str, Pipeline]:
     """Point d'entrée unique que les futures tâches Airflow (PythonOperator)
     importeront pour récupérer un pipeline nommé, ex. `register_pipelines()["dvf"]`.
 
-    `prix_millesime` n'est pas inclus ici : il se construit par année via
-    `duckpipe.pipelines.prix_millesime.make_prix_millesime_pipeline(annee)`,
-    pas comme un pipeline statique unique.
+    `prix_millesime` et `iris_prix` ne sont pas inclus ici : ils se
+    construisent par fabrique (`make_prix_millesime_pipeline(annee)` et
+    `make_iris_prix_pipeline(year, annees_points)` — le CLI résout les
+    millésimes disponibles), pas comme des pipelines statiques uniques.
     """
     return {
         "dvf": dvf_pipeline,
         "geometries": geometries_pipeline,
         "geometries_web": geometries_web_pipeline,
+        "iris_geom": iris_geom_pipeline,
         "transport": transport_pipeline,
         "revenus": revenus_pipeline,
         "risques": risques_pipeline,
@@ -40,5 +44,6 @@ def register_pipelines() -> dict[str, Pipeline]:
         "climat": climat_pipeline,
         "proximite_metropole": proximite_metropole_pipeline,
         "score": score_pipeline,
+        "score_quartier": score_quartier_pipeline,
         "avis": avis_pipeline,
     }

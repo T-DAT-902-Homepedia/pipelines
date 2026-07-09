@@ -10,13 +10,16 @@ if TYPE_CHECKING:
     import duckdb
 
 
-def prix_millesime(con: duckdb.DuckDBPyConnection, dvf_millesime_raw: str) -> str:
+def prix_millesime(con: duckdb.DuckDBPyConnection, dvf_millesime_raw: str) -> dict[str, str]:
     """Adaptation de `exploration/src/ingest_extra.py::ensure_prix_millesime`.
 
-    Table `commune_prix` : (code_commune, nb_transactions, prix_m2_median) —
-    réutilise la même chaîne DVF que le socle (dédup par mutation + nettoyage
-    de plausibilité + clipping p1-p99) sur un millésime arbitraire, mais n'en
-    garde que l'agrégat communal (léger, pour l'analyse temporelle).
+    Deux sorties depuis la même chaîne DVF (dédup par mutation + nettoyage de
+    plausibilité + clipping p1-p99) appliquée à un millésime arbitraire :
+    - `commune_prix` : (code_commune, nb_transactions, prix_m2_median) —
+      agrégat communal léger pour l'analyse temporelle ;
+    - `dvf_points` : mutations géolocalisées au grain unitaire, consommées par
+      l'agrégat quartier (iris_prix poole plusieurs millésimes pour passer le
+      seuil de fiabilité au grain IRIS).
     """
     con.execute(
         f"""
@@ -96,6 +99,13 @@ def prix_millesime(con: duckdb.DuckDBPyConnection, dvf_millesime_raw: str) -> st
     )
     con.execute(
         """
+        CREATE OR REPLACE TABLE dvf_points AS
+        SELECT id_mutation, code_commune, longitude, latitude, prix_m2, type_local
+        FROM millesime_clean
+        """
+    )
+    con.execute(
+        """
         CREATE OR REPLACE TABLE commune_prix AS
         SELECT code_commune,
                count(*) AS nb_transactions,
@@ -104,28 +114,33 @@ def prix_millesime(con: duckdb.DuckDBPyConnection, dvf_millesime_raw: str) -> st
         GROUP BY code_commune
         """
     )
-    return "commune_prix"
+    return {"commune_prix": "commune_prix", "dvf_points": "dvf_points"}
 
 
 def make_prix_millesime_pipeline(annee: int) -> Pipeline:
     """Fabrique un Pipeline pour un millésime DVF donné.
 
     Le catalog associé doit fournir `dvf_millesime_raw_<annee>` en entrée et
-    `commune_prix_<annee>` en sortie (voir tests/test_lot4_real_data.py).
-    L'input catalog est paramétré par année ; on adapte son nom au paramètre
-    fixe `dvf_millesime_raw` attendu par `prix_millesime()` via un wrapper.
+    `commune_prix_<annee>` / `dvf_points_<annee>` en sorties (voir
+    tests/test_lot4_real_data.py). L'input catalog est paramétré par année ;
+    on adapte son nom au paramètre fixe `dvf_millesime_raw` attendu par
+    `prix_millesime()` via un wrapper.
     """
 
-    def _node_func(con: duckdb.DuckDBPyConnection, **inputs: str) -> str:
+    def _node_func(con: duckdb.DuckDBPyConnection, **inputs: str) -> dict[str, str]:
         dvf_millesime_raw = inputs[f"dvf_millesime_raw_{annee}"]
-        return prix_millesime(con, dvf_millesime_raw)
+        tables = prix_millesime(con, dvf_millesime_raw)
+        return {
+            f"commune_prix_{annee}": tables["commune_prix"],
+            f"dvf_points_{annee}": tables["dvf_points"],
+        }
 
     return Pipeline(
         nodes=[
             Node(
                 func=_node_func,
                 inputs=[f"dvf_millesime_raw_{annee}"],
-                outputs=[f"commune_prix_{annee}"],
+                outputs=[f"commune_prix_{annee}", f"dvf_points_{annee}"],
                 name=f"prix_millesime_{annee}",
             ),
         ]

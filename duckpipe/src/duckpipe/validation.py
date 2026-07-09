@@ -77,6 +77,12 @@ def validate_silver(
         ]
         report["coverage"] = quality.coverage(con, sources)
 
+    # Appariement DVF -> référentiel IRIS (informatif) : mesure le décalage de
+    # millésimes COG (communes DVF fusionnées/scindées absentes des contours
+    # IRIS), la première cause de mutations perdues par iris_prix.
+    if quality.table_exists(con, "dvf") and quality.table_exists(con, "iris_geom"):
+        report["iris_match"] = quality.match_rate(con, "dvf", "iris_geom")
+
     if report_dest:
         _write_report(report, report_dest)
     if critical_failures:
@@ -159,6 +165,64 @@ def validate_gold(
     if critical_failures:
         raise CriticalValidationError(
             "contrôles gold en échec : " + " ; ".join(critical_failures)
+        )
+    return report
+
+
+def validate_gold_quartier(
+    con: duckdb.DuckDBPyConnection,
+    quartier_table: str = "score_quartier",
+    *,
+    report_dest: str | None = None,
+) -> dict:
+    """Contrôles gold sur ``score_quartier`` : bornes de n_prix_iris et
+    gap_iris, unicité des IRIS, héritage commune complet.
+
+    Pas de seuil de volumétrie strict (la fenêtre poolée dépend des millésimes
+    dvf_points disponibles) mais une table vide est critique : l'étape a
+    tourné pour rien. Appelé par le CLI seulement si le parquet existe
+    (pattern avis) : l'absence de l'étape n'échoue pas le run.
+    """
+    n = con.execute(f"SELECT count(*) FROM {quartier_table}").fetchone()[0]
+    n_dup = con.execute(
+        f"SELECT count(*) - count(DISTINCT code_iris) FROM {quartier_table}"
+    ).fetchone()[0]
+    n_prix_hs = con.execute(
+        f"SELECT count(*) FROM {quartier_table} "
+        "WHERE n_prix_iris IS NULL OR n_prix_iris < 0 OR n_prix_iris > 1"
+    ).fetchone()[0]
+    n_gap_hs = con.execute(
+        f"SELECT count(*) FROM {quartier_table} WHERE gap_iris < -1 OR gap_iris > 1"
+    ).fetchone()[0]
+    n_score_null = con.execute(
+        f"SELECT count(*) FROM {quartier_table} WHERE score_commune IS NULL"
+    ).fetchone()[0]
+
+    report = {
+        "nb_iris_scores": n,
+        "nb_code_iris_dupliques": n_dup,
+        "nb_n_prix_hors_bornes": n_prix_hs,
+        "nb_gap_hors_bornes": n_gap_hs,
+        "nb_score_commune_null": n_score_null,
+    }
+
+    critical_failures: list[str] = []
+    if n == 0:
+        critical_failures.append("aucun IRIS scoré (table vide)")
+    if n_dup:
+        critical_failures.append(f"{n_dup} code_iris dupliqués")
+    if n_prix_hs:
+        critical_failures.append(f"{n_prix_hs} n_prix_iris hors [0, 1]")
+    if n_gap_hs:
+        critical_failures.append(f"{n_gap_hs} gap_iris hors [-1, 1]")
+    if n_score_null:
+        critical_failures.append(f"{n_score_null} IRIS sans score commune hérité")
+
+    if report_dest:
+        _write_report(report, report_dest)
+    if critical_failures:
+        raise CriticalValidationError(
+            "contrôles gold quartier en échec : " + " ; ".join(critical_failures)
         )
     return report
 

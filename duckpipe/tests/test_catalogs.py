@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from duckpipe import catalogs
 from duckpipe.pipeline_registry import register_pipelines
+from duckpipe.pipelines.iris import make_iris_prix_pipeline
 from duckpipe.pipelines.prix_millesime import make_prix_millesime_pipeline
 
 YEAR = 2024
@@ -16,6 +17,7 @@ def test_every_pipeline_io_is_in_catalog(tmp_path) -> None:
 
     pipelines = dict(register_pipelines())
     pipelines["prix_millesime"] = make_prix_millesime_pipeline(YEAR)
+    pipelines["iris_prix"] = make_iris_prix_pipeline(YEAR, catalogs.WEB_MILLESIMES)
 
     missing: list[str] = []
     for pipeline_name, pipeline in pipelines.items():
