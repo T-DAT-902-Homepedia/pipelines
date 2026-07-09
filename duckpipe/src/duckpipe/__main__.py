@@ -26,6 +26,7 @@ from duckpipe.connection import get_connection
 from duckpipe.fetch_climat import CLIMAT_BRONZE_PATH, build_stations_csv
 from duckpipe.fetch_dpe import DPE_BRONZE_PATH, build_dpe_sample
 from duckpipe.pipeline_registry import register_pipelines
+from duckpipe.pipelines.iris import make_iris_prix_pipeline
 from duckpipe.pipelines.prix_millesime import make_prix_millesime_pipeline
 
 logger = logging.getLogger(__name__)
@@ -61,18 +62,39 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         logger.info("[ok] ingest %s", name)
 
 
+def _uri_exists(uri: str) -> bool:
+    return fetch.gcs_exists(uri) if fetch.is_gcs_uri(uri) else Path(uri).exists()
+
+
+def _annees_points_disponibles(env: catalogs.Environment, year: int) -> list[int]:
+    """Millésimes annexes dont les dvf_points existent en silver : un millésime
+    manquant réduit la fenêtre poolée d'iris_prix au lieu d'échouer le run
+    (même tolérance que l'évolution des fiches dans publish_web)."""
+    annees: list[int] = []
+    for annee in catalogs.WEB_MILLESIMES:
+        if annee == year:
+            continue
+        if _uri_exists(catalogs.dvf_points_path(env, annee)):
+            annees.append(annee)
+        else:
+            logger.warning("[warn] dvf_points_%s absent, fenêtre poolée réduite", annee)
+    return annees
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     env = catalogs.get_environment(args.env, local_root=args.local_root)
     catalog = catalogs.build_catalog(env, year=args.year, run_date=args.run_date)
 
     if args.pipeline == "prix_millesime":
         pipeline = make_prix_millesime_pipeline(args.year)
+    elif args.pipeline == "iris_prix":
+        pipeline = make_iris_prix_pipeline(args.year, _annees_points_disponibles(env, args.year))
     else:
         pipelines = register_pipelines()
         if args.pipeline not in pipelines:
             raise SystemExit(
                 f"pipeline inconnu : {args.pipeline!r} "
-                f"(disponibles : {', '.join(sorted(pipelines))}, prix_millesime)"
+                f"(disponibles : {', '.join(sorted(pipelines))}, prix_millesime, iris_prix)"
             )
         pipeline = pipelines[args.pipeline]
 
@@ -120,10 +142,7 @@ def cmd_validate_gold(args: argparse.Namespace) -> None:
             )
         previous_top: list[str] | None = None
         latest = catalogs.gold_latest_path(env)
-        latest_exists = (
-            fetch.gcs_exists(latest) if fetch.is_gcs_uri(latest) else Path(latest).exists()
-        )
-        if latest_exists:
+        if _uri_exists(latest):
             with fetch.local_read_path(latest) as latest_path:
                 previous_top = [
                     row[0]
@@ -138,12 +157,26 @@ def cmd_validate_gold(args: argparse.Namespace) -> None:
             report_dest=catalogs.dq_report_path(env, "gold", args.run_date),
         )
 
+        # Contrôles gold du quartier, si l'étape score_quartier a produit la
+        # table (facultatif : le run doit rester rejouable sans la maille IRIS).
+        quartier_uri = catalogs.gold_quartier_path(env, args.run_date)
+        if _uri_exists(quartier_uri):
+            with fetch.local_read_path(quartier_uri) as quartier_path:
+                con.execute(
+                    "CREATE TABLE score_quartier AS SELECT * FROM "
+                    f"read_parquet('{quartier_path}')"
+                )
+            validation.validate_gold_quartier(
+                con,
+                report_dest=catalogs.dq_report_path(env, "gold_quartier", args.run_date),
+            )
+        else:
+            logger.warning("[warn] score_quartier absent, contrôle gold quartier ignoré")
+
         # Contrôles gold des avis, si l'étape NLP a produit la table (facultatif :
         # la couverture avis est partielle et le pipeline peut tourner sans).
         avis_uri = catalogs.gold_avis_path(env, args.run_date)
-        avis_exists = (
-            fetch.gcs_exists(avis_uri) if fetch.is_gcs_uri(avis_uri) else Path(avis_uri).exists()
-        )
+        avis_exists = _uri_exists(avis_uri)
         if avis_exists:
             with fetch.local_read_path(avis_uri) as avis_path:
                 con.execute(
@@ -165,6 +198,13 @@ def cmd_publish(args: argparse.Namespace) -> None:
     validation.publish(
         catalogs.gold_score_path(env, args.run_date), catalogs.gold_latest_path(env)
     )
+    # Score quartier : publié s'il existe (toléré absent, comme les avis — les
+    # runs antérieurs à la maille IRIS restent rejouables).
+    quartier_uri = catalogs.gold_quartier_path(env, args.run_date)
+    if _uri_exists(quartier_uri):
+        validation.publish(quartier_uri, catalogs.gold_quartier_latest_path(env))
+    else:
+        logger.warning("[warn] score_quartier absent, publication quartier ignorée")
 
 
 def cmd_publish_web(args: argparse.Namespace) -> None:

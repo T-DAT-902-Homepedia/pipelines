@@ -75,6 +75,10 @@ SILVER_PATHS = {
     "dept_geom_100m": "dept_geom/dept_geom_100m.parquet",
     "dept_geom_1000m": "dept_geom/dept_geom_1000m.parquet",
     "region_geom_1000m": "region_geom/region_geom_1000m.parquet",
+    # Maille quartier (IRIS) : contours stables, agrégat prix millésimé (la
+    # fenêtre poolée multi-millésimes glisse avec l'année de run).
+    "iris_geom": "iris_geom/iris_geom.parquet",  # GeoParquet
+    "iris_prix": "iris_prix/year={year}/iris_prix.parquet",
     "dvf": "dvf_clean/year={year}/dvf.parquet",
     "commune_agg": "commune_agg/year={year}/commune_agg.parquet",
     "commune_agg_type": "commune_agg_type/year={year}/commune_agg_type.parquet",
@@ -109,6 +113,21 @@ def gold_latest_path(env: Environment) -> str:
 
 def gold_avis_path(env: Environment, run_date: str) -> str:
     return f"{env.gold_root}/avis_commune/run_date={run_date}/avis_commune.parquet"
+
+
+def gold_quartier_path(env: Environment, run_date: str) -> str:
+    return f"{env.gold_root}/score_quartier/run_date={run_date}/score_quartier.parquet"
+
+
+def gold_quartier_latest_path(env: Environment) -> str:
+    return f"{env.gold_root}/score_quartier/latest/score_quartier.parquet"
+
+
+def dvf_points_path(env: Environment, annee: int) -> str:
+    """Chemin silver des mutations géolocalisées d'un millésime annexe (les
+    points du millésime courant restent dans la table silver `dvf`). Exposé
+    pour que le CLI vérifie l'existence avant de construire iris_prix."""
+    return f"{env.silver_root}/dvf_points/year={annee}/dvf_points.parquet"
 
 
 def dq_report_path(env: Environment, kind: str, run_date: str) -> str:
@@ -166,6 +185,10 @@ def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
         "regions_1000m_raw",
         GeoJsonDataset(f"{bronze}/{SOURCES['geometries_regions_1000m'].bronze_path}"),
     )
+    catalog.add(
+        "iris_raw",
+        GeoJsonDataset(f"{bronze}/{SOURCES['geometries_iris'].bronze_path}"),
+    )
     catalog.add("arrets_raw", CsvDataset(f"{bronze}/{SOURCES['transport'].bronze_path}"))
     catalog.add(
         "revenus_raw",
@@ -219,7 +242,8 @@ def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
         catalog.add(name, ParquetDataset(path))
     catalog.add("arrets", MemoryDataset())  # intermédiaire transport, jamais persisté
     # Millésimes DVF annexes : l'année du run + ceux consommés par l'export web
-    # (l'évolution des prix des fiches communes, cf. WEB_MILLESIMES).
+    # (l'évolution des prix des fiches communes, cf. WEB_MILLESIMES) et par
+    # l'agrégat quartier (mutations géolocalisées poolées, cf. iris_prix).
     for annee in {year, *WEB_MILLESIMES}:
         catalog.add(
             f"commune_prix_{annee}",
@@ -227,9 +251,11 @@ def build_catalog(env: Environment, *, year: int, run_date: str) -> Catalog:
                 f"{env.silver_root}/commune_prix/year={annee}/commune_prix.parquet"
             ),
         )
+        catalog.add(f"dvf_points_{annee}", ParquetDataset(dvf_points_path(env, annee)))
 
     # --- Gold ----------------------------------------------------------------
     catalog.add("score_territoire", ParquetDataset(gold_score_path(env, run_date)))
     catalog.add("avis_commune", ParquetDataset(gold_avis_path(env, run_date)))
+    catalog.add("score_quartier", ParquetDataset(gold_quartier_path(env, run_date)))
 
     return catalog

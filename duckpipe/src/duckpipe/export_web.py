@@ -310,6 +310,48 @@ def build_choropleth_regions(
     return out_table
 
 
+def build_choropleth_iris(
+    con: duckdb.DuckDBPyConnection,
+    iris_geom: str,
+    score_quartier: str,
+    *,
+    out_table: str = "web_choropleth_iris",
+) -> str:
+    """Table choroplèthe quartier (IRIS) : uniquement les communes multi-IRIS —
+    un IRIS de commune mono-IRIS duplique le contour communal déjà servi par
+    communes-high, le front retombe alors sur la maille commune. LEFT JOIN :
+    un IRIS non fiable (ou de commune non scorée) reste affiché « pas de
+    donnée », comme les communes. Les properties tiennent lieu de
+    fiche/tooltip : pas d'artefact fiche séparé au MVP quartier.
+    """
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE {out_table} AS
+        SELECT
+            g.code_iris,
+            g.code_commune,
+            g.nom_iris AS nom,
+            g.nom_commune,
+            g.type_iris,
+            {DEPT_EXPR.replace("code_commune", "g.code_commune")} AS code_departement,
+            CAST(round(q.prix_m2_median) AS INTEGER) AS prix_m2_median,
+            coalesce(q.nb_transactions, 0) AS nb_transactions,
+            q.code_iris IS NOT NULL AS fiable,
+            round(q.n_prix_iris, 3) AS n_prix_iris,
+            round(q.score_commune, 3) AS score_commune,
+            round(q.gap_iris, 3) AS gap_iris,
+            round(q.gap_pondere_iris, 3) AS gap_pondere_iris,
+            q.annee_min,
+            q.annee_max,
+            g.geom
+        FROM {iris_geom} g
+        LEFT JOIN {score_quartier} q USING (code_iris)
+        WHERE g.nb_iris_commune > 1
+        """
+    )
+    return out_table
+
+
 def build_evolution(
     con: duckdb.DuckDBPyConnection,
     commune_agg: str,

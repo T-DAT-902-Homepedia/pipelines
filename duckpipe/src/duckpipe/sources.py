@@ -92,6 +92,22 @@ SOURCES: dict[str, SourceSpec] = {
         ),
         bronze_path="geom/regions-1000m.geojson",
     ),
+    # CONTOURS-IRIS® (coédition IGN/INSEE, Licence Ouverte 2.0) : maille
+    # infra-communale des agrégats quartier. Édition FlatGeoBuf France entière
+    # (DOM inclus), déjà généralisée moyenne échelle — aucune simplification
+    # calculée en aval, même politique que les contours Etalab (ADR-0013).
+    # Paris/Lyon/Marseille y sont codés par ARRONDISSEMENT (751xx/6938x/132xx),
+    # comme dans le DVF. Repli si cette édition disparaît de la Géoplateforme :
+    # GPKG (archive .7z, extracteur à écrire) ou GeoParquet IGN (encodage
+    # GeoArrow non lu par duckdb-spatial à ce jour).
+    "geometries_iris": SourceSpec(
+        name="geometries_iris",
+        url=(
+            "https://data.geopf.fr/telechargement/download/CONTOURS-IRIS/"
+            "CONTOURS-IRIS_3-0__FLATGEOBUF_WGS84G_FRA_2026-01-01/contours_iris.fgb"
+        ),
+        bronze_path="geom/contours_iris.fgb",
+    ),
     "transport": SourceSpec(
         name="transport",
         url="https://transport.data.gouv.fr/resources/81333/download",

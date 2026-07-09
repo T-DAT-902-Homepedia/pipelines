@@ -53,6 +53,7 @@ main:
               - "geometries_departements_100m"
               - "geometries_departements_1000m"
               - "geometries_regions_1000m"
+              - "geometries_iris"
               - "transport"
               - "revenus"
               - "risques"
@@ -88,6 +89,7 @@ main:
             value: pipeline
             in:
               - "dvf"
+              - "iris_geom"
               - "transport"
               - "revenus"
               - "risques"
@@ -125,6 +127,15 @@ main:
                     job_name: ${job_name}
                     cli_args: ${["run", "prix_millesime", "--env", "prod", "--year", string(millesime)]}
 
+    # Agrégat prix à la maille IRIS : pool du millésime courant (silver dvf)
+    # et des mutations géolocalisées des millésimes annexes (dvf_points,
+    # produits par l'étape millesimes) — d'où le placement séquentiel après.
+    - iris_prix:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["run", "iris_prix", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
     - validate_silver:
         call: run_duckpipe
         args:
@@ -136,6 +147,14 @@ main:
         args:
           job_name: ${job_name}
           cli_args: ${["run", "score", "--env", "prod", "--year", string(year), "--run-date", run_date]}
+
+    # Gap qualité-prix à la maille quartier : hérite du score communal du run,
+    # d'où le placement après l'étape score.
+    - score_quartier:
+        call: run_duckpipe
+        args:
+          job_name: ${job_name}
+          cli_args: ${["run", "score_quartier", "--env", "prod", "--year", string(year), "--run-date", run_date]}
 
     # Agrège le silver avis (produit hors-DAG par le workflow GitHub nlp-avis.yml,
     # chemins stables non millésimés) en gold avis_commune. Indépendant du score,

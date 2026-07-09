@@ -127,8 +127,11 @@ gs://homepedia-data/
 │   └── dpe/
 ├── silver/
 │   ├── communes_geom/           (GeoParquet)
+│   ├── iris_geom/               (GeoParquet, contours IRIS — maille quartier)
 │   ├── dvf_clean/year=2024/
+│   ├── dvf_points/year=<annee>/ (mutations géolocalisées des millésimes annexes)
 │   ├── commune_agg/year=2024/
+│   ├── iris_prix/year=2024/     (agrégat prix par IRIS, fenêtre poolée)
 │   ├── transport_commune/
 │   ├── climat_commune/
 │   ├── proximite_commune/
@@ -143,6 +146,9 @@ gs://homepedia-data/
     ├── score_territoire/
     │   ├── run_date=2025-01-15/score.parquet
     │   └── latest/score.parquet   ← lu par l'API FastAPI
+    ├── score_quartier/            (gap qualité-prix à la maille IRIS)
+    │   ├── run_date=2025-01-15/score_quartier.parquet
+    │   └── latest/score_quartier.parquet
     └── dq_reports/
         ├── silver_2025-01-15.json
         └── gold_2025-01-15.json
