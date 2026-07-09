@@ -23,8 +23,12 @@ pytestmark = pytest.mark.skipif(
     not EXPLORATION_RAW.exists(), reason="exploration/data/raw introuvable en local"
 )
 
-# Comptes de référence observés dans exploration/data/exploration.duckdb
-REF_PRIX_MILLESIME = {2021: 31447, 2022: 31248}
+# Comptes de référence observés dans exploration/data/exploration.duckdb.
+# Exception 2022 : geo-dvf republie ses millésimes sous la même URL `latest`
+# et le brut local a été re-téléchargé le 2026-06-30 (31 250 communes, +2 vs
+# la base de référence bâtie sur la version du 2026-06-25) — compte re-dérivé
+# du fichier courant, la base de référence n'ayant pas été reconstruite.
+REF_PRIX_MILLESIME = {2021: 31447, 2022: 31250}
 
 
 @pytest.fixture
